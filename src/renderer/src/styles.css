@@ -273,4 +273,9 @@ h3 {
   border: 1px solid var(--error);
   padding: 10px 16px;
   border-radius: var(--radius);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: 80%;
+  z-index: 20;
 }

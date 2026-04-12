@@ -21,7 +21,17 @@ function createMainWindow(): BrowserWindow {
     },
   });
 
-  win.once('ready-to-show', () => win.show());
+  win.once('ready-to-show', () => {
+    win.show();
+    if (isDev) win.webContents.openDevTools({ mode: 'right' });
+  });
+
+  win.webContents.on('preload-error', (_event, preloadPath, error) => {
+    console.error('[preload-error]', preloadPath, error);
+  });
+  win.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[render-process-gone]', details);
+  });
 
   win.webContents.setWindowOpenHandler(({ url }) => {
     void shell.openExternal(url);

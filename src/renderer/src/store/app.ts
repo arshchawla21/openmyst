@@ -13,6 +13,7 @@ interface AppState {
   refreshSettings: () => Promise<void>;
   openSettings: () => void;
   closeSettings: () => void;
+  dismissError: () => void;
   createNewProject: () => Promise<void>;
   openExistingProject: () => Promise<void>;
   closeProject: () => Promise<void>;
@@ -45,6 +46,7 @@ export const useApp = create<AppState>((set, get) => ({
 
   openSettings: () => set({ settingsOpen: true }),
   closeSettings: () => set({ settingsOpen: false }),
+  dismissError: () => set({ error: null }),
 
   createNewProject: async () => {
     set({ loading: true, error: null });
@@ -57,6 +59,7 @@ export const useApp = create<AppState>((set, get) => ({
         set({ error: result.error });
       }
     } catch (err) {
+      console.error('createNewProject failed', err);
       set({ error: (err as Error).message });
     } finally {
       set({ loading: false });
@@ -74,6 +77,7 @@ export const useApp = create<AppState>((set, get) => ({
         set({ error: result.error });
       }
     } catch (err) {
+      console.error('openExistingProject failed', err);
       set({ error: (err as Error).message });
     } finally {
       set({ loading: false });
@@ -81,7 +85,15 @@ export const useApp = create<AppState>((set, get) => ({
   },
 
   closeProject: async () => {
-    await bridge.projects.close();
-    set({ project: null });
+    set({ loading: true, error: null });
+    try {
+      await bridge.projects.close();
+      set({ project: null });
+    } catch (err) {
+      console.error('closeProject failed', err);
+      set({ error: (err as Error).message });
+    } finally {
+      set({ loading: false });
+    }
   },
 }));

@@ -5,7 +5,7 @@ import { Welcome } from './components/Welcome';
 import { SettingsModal } from './components/SettingsModal';
 
 export function App(): JSX.Element {
-  const { project, settingsOpen, init, error } = useApp();
+  const { project, settingsOpen, init, error, dismissError } = useApp();
 
   useEffect(() => {
     void init();
@@ -15,7 +15,14 @@ export function App(): JSX.Element {
     <div className="app-root">
       {project ? <Layout /> : <Welcome />}
       {settingsOpen && <SettingsModal />}
-      {error && <div className="error-toast">{error}</div>}
+      {error && (
+        <div className="error-toast" role="alert">
+          <span>{error}</span>
+          <button type="button" className="link" onClick={dismissError}>
+            Dismiss
+          </button>
+        </div>
+      )}
     </div>
   );
 }
