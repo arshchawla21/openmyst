@@ -1,14 +1,25 @@
 import type { MystApi } from '@shared/api';
 
+const EXPECTED_NAMESPACES = ['settings', 'projects', 'document'] as const;
+
 function getApi(): MystApi {
-  const api = window.myst;
+  const api = window.myst as Partial<MystApi> | undefined;
   if (!api) {
     throw new Error(
       'Preload bridge not initialized (window.myst is undefined). ' +
-        'This means the preload script did not run. Check the main process logs.',
+        'The preload script did not run — check the main process logs.',
     );
   }
-  return api;
+  for (const ns of EXPECTED_NAMESPACES) {
+    if (!(ns in api)) {
+      throw new Error(
+        `Preload bridge is stale: missing "${ns}" namespace. ` +
+          'Fully stop and restart `npm run dev` — Electron only loads the preload ' +
+          'script once, so Vite HMR does not pick up changes to it.',
+      );
+    }
+  }
+  return api as MystApi;
 }
 
 export const bridge: MystApi = {
@@ -17,5 +28,8 @@ export const bridge: MystApi = {
   },
   get projects() {
     return getApi().projects;
+  },
+  get document() {
+    return getApi().document;
   },
 } as MystApi;

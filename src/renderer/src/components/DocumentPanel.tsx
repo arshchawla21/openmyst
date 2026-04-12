@@ -1,5 +1,6 @@
 import { useApp } from '../store/app';
 import { DocumentEditor } from './DocumentEditor';
+import { ErrorBoundary } from './ErrorBoundary';
 
 export function DocumentPanel(): JSX.Element {
   const { project } = useApp();
@@ -16,7 +17,9 @@ export function DocumentPanel(): JSX.Element {
 
   return (
     <div className="document-panel">
-      <DocumentEditor projectPath={project.path} />
+      <ErrorBoundary>
+        <DocumentEditor projectPath={project.path} />
+      </ErrorBoundary>
     </div>
   );
 }
