@@ -32,6 +32,8 @@ export const IpcChannels = {
   },
   Sources: {
     Ingest: 'sources:ingest',
+    IngestText: 'sources:ingest-text',
+    PickFiles: 'sources:pick-files',
     List: 'sources:list',
     Read: 'sources:read',
     Delete: 'sources:delete',

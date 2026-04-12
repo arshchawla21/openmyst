@@ -6,6 +6,7 @@ import { DocumentFiles } from './DocumentFiles';
 import { DocumentPanel } from './DocumentPanel';
 import { ChatPanel } from './ChatPanel';
 import { TableOfContents } from './TableOfContents';
+import { SourcePreviewPopup } from './SourcePreview';
 
 export function Layout(): JSX.Element {
   const { project, openSettings, closeProject } = useApp();
@@ -44,6 +45,7 @@ export function Layout(): JSX.Element {
           <ChatPanel />
         </aside>
       </main>
+      <SourcePreviewPopup />
     </div>
   );
 }

@@ -37,10 +37,13 @@ export interface Heading {
 
 export interface SourceMeta {
   slug: string;
+  name: string;
   originalName: string;
-  type: 'pdf' | 'markdown' | 'text';
+  type: 'pdf' | 'markdown' | 'text' | 'pasted';
   addedAt: string;
   summary: string;
+  indexSummary: string;
+  sourcePath?: string;
 }
 
 export interface DocumentFile {

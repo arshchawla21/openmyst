@@ -20,6 +20,9 @@ import { DOMParser as PmDOMParser, Slice } from '@tiptap/pm/model';
 import { bridge } from '../api/bridge';
 import { EditorToolbar } from './EditorToolbar';
 import { useHeadings } from '../store/headings';
+import { useMystLinkHandler } from '../hooks/useMystLinkHandler';
+import { useDocuments } from '../store/documents';
+import { useSourcePreview } from '../store/sourcePreview';
 import type { Heading } from '@shared/types';
 import type { Editor } from '@tiptap/core';
 
@@ -54,6 +57,37 @@ const MarkdownBlockPaste = Extension.create({
     ];
   },
 });
+
+type LinkClickCallback = (href: string) => void;
+
+function createMystLinkClickPlugin(onLinkClick: LinkClickCallback): Extension {
+  return Extension.create({
+    name: 'mystLinkClick',
+    addProseMirrorPlugins() {
+      return [
+        new Plugin({
+          key: new PluginKey('mystLinkClick'),
+          props: {
+            handleDOMEvents: {
+              click(view, event) {
+                const target = (event.target as HTMLElement).closest('a');
+                if (!target) return false;
+                const href = target.getAttribute('href');
+                if (!href) return false;
+                if (href.startsWith('http://') || href.startsWith('https://')) return false;
+                event.preventDefault();
+                event.stopPropagation();
+                event.stopImmediatePropagation();
+                onLinkClick(href);
+                return true;
+              },
+            },
+          },
+        }),
+      ];
+    },
+  });
+}
 
 const findHighlightKey = new PluginKey('findHighlight');
 
@@ -109,11 +143,16 @@ interface TiptapEditorProps {
   initialValue: string;
   onMarkdownChange: (md: string) => void;
   onEditorReady: (editor: Editor) => void;
+  onLinkClick: LinkClickCallback;
 }
 
-function TiptapEditor({ initialValue, onMarkdownChange, onEditorReady }: TiptapEditorProps): JSX.Element {
+function TiptapEditor({ initialValue, onMarkdownChange, onEditorReady, onLinkClick }: TiptapEditorProps): JSX.Element {
   const onChangeRef = useRef(onMarkdownChange);
   onChangeRef.current = onMarkdownChange;
+  const onLinkClickRef = useRef(onLinkClick);
+  onLinkClickRef.current = onLinkClick;
+
+  const [linkPlugin] = useState(() => createMystLinkClickPlugin((href) => onLinkClickRef.current(href)));
 
   const editor = useEditor({
     extensions: [
@@ -132,6 +171,7 @@ function TiptapEditor({ initialValue, onMarkdownChange, onEditorReady }: TiptapE
       Image,
       MarkdownBlockPaste,
       FindHighlight,
+      linkPlugin,
       Markdown.configure({
         html: false,
         transformPastedText: true,
@@ -168,7 +208,25 @@ export function DocumentEditor({ projectPath, activeFile }: DocumentEditorProps)
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastSavedRef = useRef<string>('');
   const { setHeadings, scrollToPos, clearScroll } = useHeadings();
+  const { files, setActive } = useDocuments();
+  const openPreview = useSourcePreview((s) => s.open);
+  useMystLinkHandler();
   const prevHeadingsJson = useRef('');
+
+  const handleLinkClick = useCallback((href: string) => {
+    if (!href.endsWith('.md')) return;
+    const filename = href.replace(/^\.?\/?/, '');
+    const doc = files.find((f) => f.filename === filename);
+    if (doc) {
+      setActive(doc.filename);
+      return;
+    }
+    const slug = filename.replace(/\.md$/, '');
+    bridge.sources.list().then((sources) => {
+      const source = sources.find((s) => s.slug === slug);
+      if (source) openPreview(source);
+    }).catch(console.error);
+  }, [files, setActive, openPreview]);
 
   useEffect(() => {
     const handler = (e: globalThis.KeyboardEvent): void => {
@@ -312,6 +370,7 @@ export function DocumentEditor({ projectPath, activeFile }: DocumentEditorProps)
             initialValue={initialValue}
             onMarkdownChange={scheduleSave}
             onEditorReady={handleEditorReady}
+            onLinkClick={handleLinkClick}
           />
         </div>
       </div>

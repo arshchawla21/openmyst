@@ -3,6 +3,7 @@ import MarkdownIt from 'markdown-it';
 import type { ChatMessage } from '@shared/types';
 import { useApp } from '../store/app';
 import { useDocuments } from '../store/documents';
+import { useMystLinkHandler } from '../hooks/useMystLinkHandler';
 import { bridge } from '../api/bridge';
 
 const chatMd = new MarkdownIt({ html: false, linkify: true, breaks: true });
@@ -62,7 +63,8 @@ function ChatView(): JSX.Element {
   const [sending, setSending] = useState(false);
   const [streamingText, setStreamingText] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  useMystLinkHandler();
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {

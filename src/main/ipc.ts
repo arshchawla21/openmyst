@@ -9,7 +9,7 @@ import {
 import { closeProject, createNewProject, getCurrentProject, openProject } from './projects';
 import { createDocument, deleteDocument, listDocuments, readDocument, writeDocument } from './document';
 import { clearHistory, loadHistory, sendMessage } from './chat';
-import { deleteSource, ingestSources, listSources, readSource } from './sources';
+import { deleteSource, ingestSources, ingestText, listSources, pickSourceFiles, readSource } from './sources';
 
 export function registerIpcHandlers(): void {
   ipcMain.handle(IpcChannels.Settings.Get, () => getSettings());
@@ -98,6 +98,16 @@ export function registerIpcHandlers(): void {
     }
     return ingestSources(filePaths as string[]);
   });
+  ipcMain.handle(IpcChannels.Sources.IngestText, async (_event, text: unknown, title: unknown) => {
+    if (typeof text !== 'string' || text.trim().length === 0) {
+      throw new Error('Text must be a non-empty string.');
+    }
+    if (typeof title !== 'string' || title.trim().length === 0) {
+      throw new Error('Title must be a non-empty string.');
+    }
+    return ingestText(text.trim(), title.trim());
+  });
+  ipcMain.handle(IpcChannels.Sources.PickFiles, () => pickSourceFiles());
   ipcMain.handle(IpcChannels.Sources.List, () => listSources());
   ipcMain.handle(IpcChannels.Sources.Read, (_event, slug: unknown) => {
     if (typeof slug !== 'string' || slug.trim().length === 0) {

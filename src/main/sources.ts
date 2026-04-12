@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import { join, extname, basename } from 'node:path';
-import { BrowserWindow } from 'electron';
+import { dialog, BrowserWindow } from 'electron';
 import { IpcChannels } from '@shared/ipc-channels';
 import type { SourceMeta } from '@shared/types';
 import { getCurrentProject } from './projects';
@@ -38,14 +38,35 @@ function sendToRenderer(channel: string, ...args: unknown[]): void {
   }
 }
 
-async function generateSummary(text: string, originalName: string): Promise<string> {
+async function uniqueSlugFor(base: string): Promise<string> {
+  let slug = base;
+  let counter = 1;
+  while (await pathExists(projectPath(`sources/${slug}.md`))) {
+    slug = `${base}_${counter}`;
+    counter++;
+  }
+  return slug;
+}
+
+interface SourceDigest {
+  name: string;
+  summary: string;
+  indexSummary: string;
+}
+
+async function generateDigest(rawText: string, hint: string, existingSources?: SourceMeta[]): Promise<SourceDigest> {
   const apiKey = await getOpenRouterKey();
-  if (!apiKey) return `Source: ${originalName}`;
+  if (!apiKey) {
+    return {
+      name: hint,
+      summary: rawText.slice(0, 500),
+      indexSummary: `Source: ${hint}`,
+    };
+  }
 
   const settings = await getSettings();
   const model = settings.defaultModel;
-
-  const preview = text.slice(0, 3000);
+  const preview = rawText.slice(0, 6000);
 
   try {
     const response = await fetch(OPENROUTER_URL, {
@@ -61,26 +82,87 @@ async function generateSummary(text: string, originalName: string): Promise<stri
         messages: [
           {
             role: 'system',
-            content: 'You summarize documents in ONE sentence. Be specific and informative. Output only the summary, nothing else.',
+            content: `You process source material into a research wiki entry. Given raw text from a source, output ONLY valid JSON with these three fields:
+
+{
+  "name": "A short, descriptive title for this source (2-6 words)",
+  "summary": "A detailed wiki-style summary of the source content. 2-4 paragraphs covering the key points, arguments, data, and conclusions. Write in third person. Be thorough — this summary replaces the original for research purposes. You may use markdown links to reference other sources if relevant, using the format [Source Name](slug.md).",
+  "indexSummary": "One sentence (under 20 words) describing what this source covers, for quick scanning."
+}
+
+Output ONLY the JSON object. No markdown fences, no commentary.`,
           },
           {
             role: 'user',
-            content: `Summarize this source titled "${originalName}" in one sentence:\n\n${preview}`,
+            content: `Source hint: "${hint}"${existingSources?.length ? `\n\nExisting sources in this project (you can link to these using [Name](slug.md)):\n${existingSources.map((s) => `- ${s.name} (${s.slug}.md)`).join('\n')}` : ''}\n\nRaw text:\n${preview}`,
           },
         ],
         stream: false,
       }),
     });
 
-    if (!response.ok) return `Source: ${originalName}`;
+    if (!response.ok) {
+      return { name: hint, summary: rawText.slice(0, 500), indexSummary: `Source: ${hint}` };
+    }
 
     const data = (await response.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
     };
-    return data.choices?.[0]?.message?.content?.trim() || `Source: ${originalName}`;
+    const content = data.choices?.[0]?.message?.content?.trim() || '';
+
+    const cleaned = content.replace(/^```json?\s*\n?/, '').replace(/\n?```\s*$/, '');
+    const parsed = JSON.parse(cleaned) as Partial<SourceDigest>;
+
+    return {
+      name: typeof parsed.name === 'string' ? parsed.name : hint,
+      summary: typeof parsed.summary === 'string' ? parsed.summary : rawText.slice(0, 500),
+      indexSummary: typeof parsed.indexSummary === 'string' ? parsed.indexSummary : `Source: ${hint}`,
+    };
   } catch {
-    return `Source: ${originalName}`;
+    return { name: hint, summary: rawText.slice(0, 500), indexSummary: `Source: ${hint}` };
   }
+}
+
+async function extractText(filePath: string): Promise<{ text: string; type: SourceMeta['type'] }> {
+  const ext = extname(filePath).toLowerCase();
+  if (ext === '.pdf') {
+    const buffer = await fs.readFile(filePath);
+    const { PDFParse } = await import('pdf-parse');
+    const parser = new PDFParse({ data: new Uint8Array(buffer) });
+    const result = await parser.getText();
+    await parser.destroy();
+    return { text: result.text, type: 'pdf' };
+  }
+  const text = await fs.readFile(filePath, 'utf-8');
+  if (ext === '.md' || ext === '.markdown') return { text, type: 'markdown' };
+  return { text, type: 'text' };
+}
+
+async function saveSource(
+  slug: string,
+  digest: SourceDigest,
+  type: SourceMeta['type'],
+  originalName: string,
+  sourcePath?: string,
+): Promise<SourceMeta> {
+  await fs.writeFile(projectPath(`sources/${slug}.md`), digest.summary, 'utf-8');
+
+  const meta: SourceMeta = {
+    slug,
+    name: digest.name,
+    originalName,
+    type,
+    addedAt: new Date().toISOString(),
+    summary: digest.summary,
+    indexSummary: digest.indexSummary,
+    sourcePath,
+  };
+  await fs.writeFile(
+    projectPath(`sources/${slug}.meta.json`),
+    JSON.stringify(meta, null, 2),
+    'utf-8',
+  );
+  return meta;
 }
 
 async function updateSourcesIndex(): Promise<void> {
@@ -90,7 +172,7 @@ async function updateSourcesIndex(): Promise<void> {
     lines.push('_No sources yet._\n');
   } else {
     for (const s of sources) {
-      lines.push(`- [${s.originalName}](${s.slug}.md) — ${s.summary}`);
+      lines.push(`- [${s.name}](${s.slug}.md) — ${s.indexSummary}`);
     }
     lines.push('');
   }
@@ -99,61 +181,44 @@ async function updateSourcesIndex(): Promise<void> {
 
 export async function ingestSources(filePaths: string[]): Promise<SourceMeta[]> {
   const results: SourceMeta[] = [];
+  const existing = await listSources();
 
   for (const filePath of filePaths) {
-    const ext = extname(filePath).toLowerCase();
     const originalName = basename(filePath);
-    const slug = slugify(originalName);
-
-    let uniqueSlug = slug;
-    let counter = 1;
-    while (await pathExists(projectPath(`sources/${uniqueSlug}.md`))) {
-      uniqueSlug = `${slug}_${counter}`;
-      counter++;
-    }
-
-    let text = '';
-    let type: SourceMeta['type'] = 'text';
-
-    if (ext === '.pdf') {
-      type = 'pdf';
-      const buffer = await fs.readFile(filePath);
-      const { PDFParse } = await import('pdf-parse');
-      const parser = new PDFParse({ data: new Uint8Array(buffer) });
-      const result = await parser.getText();
-      text = result.text;
-      await parser.destroy();
-    } else if (ext === '.md' || ext === '.markdown') {
-      type = 'markdown';
-      text = await fs.readFile(filePath, 'utf-8');
-    } else {
-      type = 'text';
-      text = await fs.readFile(filePath, 'utf-8');
-    }
-
-    await fs.writeFile(projectPath(`sources/${uniqueSlug}.md`), text, 'utf-8');
-
-    const summary = await generateSummary(text, originalName);
-
-    const meta: SourceMeta = {
-      slug: uniqueSlug,
-      originalName,
-      type,
-      addedAt: new Date().toISOString(),
-      summary,
-    };
-    await fs.writeFile(
-      projectPath(`sources/${uniqueSlug}.meta.json`),
-      JSON.stringify(meta, null, 2),
-      'utf-8',
-    );
-
+    const { text, type } = await extractText(filePath);
+    const digest = await generateDigest(text, originalName, existing);
+    const slug = await uniqueSlugFor(slugify(digest.name || originalName));
+    const meta = await saveSource(slug, digest, type, originalName, filePath);
     results.push(meta);
   }
 
   await updateSourcesIndex();
   sendToRenderer(IpcChannels.Sources.Changed);
   return results;
+}
+
+export async function ingestText(text: string, title: string): Promise<SourceMeta> {
+  const existing = await listSources();
+  const digest = await generateDigest(text, title, existing);
+  const slug = await uniqueSlugFor(slugify(digest.name || title));
+  const meta = await saveSource(slug, digest, 'pasted', title);
+
+  await updateSourcesIndex();
+  sendToRenderer(IpcChannels.Sources.Changed);
+  return meta;
+}
+
+export async function pickSourceFiles(): Promise<string[]> {
+  const result = await dialog.showOpenDialog({
+    title: 'Add sources',
+    properties: ['openFile', 'multiSelections'],
+    filters: [
+      { name: 'Documents', extensions: ['pdf', 'md', 'markdown', 'txt'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  });
+  if (result.canceled) return [];
+  return result.filePaths;
 }
 
 export async function listSources(): Promise<SourceMeta[]> {
