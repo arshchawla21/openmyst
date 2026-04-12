@@ -17,6 +17,10 @@ const api: MystApi = {
     close: () => ipcRenderer.invoke(IpcChannels.Projects.Close),
     listRecent: () => ipcRenderer.invoke(IpcChannels.Projects.ListRecent),
   },
+  document: {
+    read: () => ipcRenderer.invoke(IpcChannels.Document.Read),
+    write: (content) => ipcRenderer.invoke(IpcChannels.Document.Write, content),
+  },
 };
 
 contextBridge.exposeInMainWorld('myst', api);

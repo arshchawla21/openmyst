@@ -25,10 +25,10 @@ The MVP is: a user can open a project, drop sources, write a markdown document, 
 
 | # | Feature | Phase | Status | Notes |
 |---|---|---|---|---|
-| D1 | Markdown editor in center pane | 1 | planned | **Milkdown** (ProseMirror-based WYSIWYG). |
-| D2 | Beautiful markdown rendering | 1 | planned | remark/rehype + KaTeX + Shiki. |
-| D3 | Autosave to `document.md` | 1 | planned | Debounced. |
-| D4 | Plain editor mode (Mode A) | 1 | planned | No AI interaction on document. |
+| D1 | Markdown editor in center pane | 1 | done | Milkdown (commonmark + gfm + history + listener + clipboard + cursor + trailing). Custom theme, dropped `@milkdown/theme-nord` because its CSS bundles a Tailwind preflight that would nuke the rest of the app. |
+| D2 | Beautiful markdown rendering | 1 | done | Writer-grade serif typography, 720px column, generous line-height. KaTeX/Shiki deferred until there's real demand. |
+| D3 | Autosave to `document.md` | 1 | done | 500ms debounce, atomic write via `.tmp` + rename, save indicator in the corner. |
+| D4 | Plain editor mode (Mode A) | 1 | done | Editor works end-to-end with no AI interaction. |
 | D5 | Keyboard shortcuts (save, bold, italic, headings) | 7 | planned | Standard writer shortcuts. |
 | D6 | Dark / light theme | 7 | planned | OS-aware. |
 
@@ -125,4 +125,5 @@ The MVP is: a user can open a project, drop sources, write a markdown document, 
 > Append-only notes per working session. Date · what changed · what's next.
 
 - **2026-04-12** · Initial `plan.md` and `features.md` written from the Review Mode proposal plus the expanded desktop-app direction (project folders, sources wiki, inline commenting as primary mode, Review Mode deferred post-MVP). Editor engine locked to Milkdown.
+- **2026-04-12** · Phase 1 — Milkdown editor landed. `document:read` / `document:write` IPC with atomic write. `DocumentEditor` component loads `document.md` on project change (keyed on `projectPath` so each project gets a fresh editor instance), debounced 500ms autosave to disk, save indicator. Writer-grade typography (serif stack, 720px column, 1.75 line-height, pretty headings/blockquotes/code/tables). Dropped `@milkdown/theme-nord` mid-integration because its CSS ships a Tailwind preflight reset — wrote all styles against `.milkdown` / `.ProseMirror` directly instead. Next: Phase 2 — chat panel wired to OpenRouter with `agent.md` as system prompt and context squishing.
 - **2026-04-12** · Phase 0 skeleton landed. Electron + Vite + React + TS via `electron-vite`, strict TS, ESLint + Prettier, CSP-locked renderer, context-isolated preload with typed `contextBridge` (`window.myst`), Zustand store. Main process has `safeStorage`-backed settings for the OpenRouter key, default model persistence, and new/open project flows that scaffold the on-disk project layout (`project.json`, `agent.md`, `document.md`, `sources/index.md`, `comments.json`, `chat.jsonl`, `.myst/diffs/`). Renderer has welcome screen, three-pane layout with placeholders for each phase, and a settings modal that round-trips the API key and default model. `npm run build` + `npm run lint` + `npm run typecheck` all green. Next: Phase 1 — wire Milkdown into the document pane and persist to `document.md`.

@@ -13,4 +13,8 @@ export const IpcChannels = {
     Close: 'projects:close',
     ListRecent: 'projects:list-recent',
   },
+  Document: {
+    Read: 'document:read',
+    Write: 'document:write',
+  },
 } as const;

@@ -7,6 +7,7 @@ import {
   setOpenRouterKey,
 } from './settings';
 import { closeProject, createNewProject, getCurrentProject, openProject } from './projects';
+import { readDocument, writeDocument } from './document';
 
 export function registerIpcHandlers(): void {
   ipcMain.handle(IpcChannels.Settings.Get, () => getSettings());
@@ -41,5 +42,13 @@ export function registerIpcHandlers(): void {
   ipcMain.handle(IpcChannels.Projects.ListRecent, async () => {
     const s = await getSettings();
     return s.recentProjects;
+  });
+
+  ipcMain.handle(IpcChannels.Document.Read, () => readDocument());
+  ipcMain.handle(IpcChannels.Document.Write, async (_event, content: unknown) => {
+    if (typeof content !== 'string') {
+      throw new Error('Document content must be a string.');
+    }
+    await writeDocument(content);
   });
 }

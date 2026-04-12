@@ -15,4 +15,8 @@ export interface MystApi {
     close: () => Promise<void>;
     listRecent: () => Promise<string[]>;
   };
+  document: {
+    read: () => Promise<string>;
+    write: (content: string) => Promise<void>;
+  };
 }

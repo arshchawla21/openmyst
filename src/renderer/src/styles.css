@@ -1,16 +1,32 @@
 :root {
-  --bg: #0f1115;
-  --bg-elev: #181b22;
-  --bg-panel: #131620;
+  --bg: #10131a;
+  --bg-elev: #181c25;
+  --bg-panel: #141823;
   --fg: #e6e8ee;
   --fg-muted: #8a92a6;
   --border: #262a36;
-  --accent: #7c9cff;
+  --accent: #9cb4ff;
   --accent-fg: #0b0e15;
   --error: #ff6b6b;
   --ok: #6bd48b;
   --radius: 8px;
   --titlebar-h: 40px;
+
+  /* Writer palette for the document surface */
+  --doc-bg: #12151d;
+  --doc-fg: #ecedf2;
+  --doc-fg-soft: #b8bcc9;
+  --doc-rule: #2a2f3d;
+  --doc-accent: #9cb4ff;
+  --doc-quote: #c7cbd6;
+  --doc-code-bg: #1c2230;
+
+  --font-ui:
+    -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  --font-serif:
+    'New York', 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Charter', Georgia, serif;
+  --font-mono:
+    'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
 }
 
 * {
@@ -25,8 +41,7 @@ body,
   height: 100%;
   background: var(--bg);
   color: var(--fg);
-  font-family:
-    -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', Roboto, sans-serif;
+  font-family: var(--font-ui);
   font-size: 14px;
   -webkit-font-smoothing: antialiased;
 }
@@ -204,6 +219,253 @@ h3 {
 .document-placeholder {
   max-width: 720px;
   margin: 40px auto;
+}
+
+/* ---- Document / Milkdown editor ----
+ * Writer-grade typography, not code-editor styling.
+ * Scoped to .document-editor / .milkdown to avoid bleeding into app chrome.
+ */
+.pane-center {
+  padding: 0;
+  background: var(--doc-bg);
+}
+.document-panel {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+.document-editor {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+.document-scroll {
+  flex: 1;
+  overflow: auto;
+}
+.document-page {
+  max-width: 720px;
+  margin: 0 auto;
+  padding: 72px 48px 160px;
+}
+.document-loading,
+.document-error {
+  padding: 72px 48px;
+  max-width: 720px;
+  margin: 0 auto;
+  color: var(--fg-muted);
+  font-family: var(--font-serif);
+}
+
+.save-indicator {
+  position: absolute;
+  right: 20px;
+  bottom: 16px;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: rgba(20, 24, 35, 0.8);
+  border: 1px solid var(--border);
+  pointer-events: none;
+  transition: opacity 150ms ease;
+}
+.save-indicator.save-saving {
+  color: var(--accent);
+}
+.save-indicator.save-error {
+  color: var(--error);
+  border-color: var(--error);
+}
+.save-indicator.save-saved {
+  opacity: 0.5;
+}
+
+/* Milkdown / ProseMirror content surface */
+.milkdown {
+  font-family: var(--font-serif);
+  color: var(--doc-fg);
+  font-size: 18px;
+  line-height: 1.75;
+  font-feature-settings: 'kern', 'liga', 'calt';
+  -webkit-font-smoothing: antialiased;
+}
+.milkdown .ProseMirror {
+  outline: none;
+  min-height: 50vh;
+  caret-color: var(--doc-accent);
+}
+.milkdown .ProseMirror:focus {
+  outline: none;
+}
+
+/* Headings: weightier, tighter, still serif */
+.milkdown h1,
+.milkdown h2,
+.milkdown h3,
+.milkdown h4 {
+  font-family: var(--font-serif);
+  color: var(--doc-fg);
+  font-weight: 600;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+.milkdown h1 {
+  font-size: 2.1em;
+  margin: 1.2em 0 0.5em;
+}
+.milkdown h2 {
+  font-size: 1.55em;
+  margin: 1.8em 0 0.4em;
+}
+.milkdown h3 {
+  font-size: 1.2em;
+  margin: 1.6em 0 0.3em;
+  color: var(--doc-fg-soft);
+}
+.milkdown h4 {
+  font-size: 1em;
+  margin: 1.4em 0 0.3em;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--doc-fg-soft);
+}
+
+/* Paragraphs */
+.milkdown p {
+  margin: 0 0 1em;
+}
+.milkdown p:last-child {
+  margin-bottom: 0;
+}
+
+/* Inline */
+.milkdown strong {
+  font-weight: 600;
+  color: var(--doc-fg);
+}
+.milkdown em {
+  font-style: italic;
+}
+.milkdown a {
+  color: var(--doc-accent);
+  text-decoration: none;
+  border-bottom: 1px solid rgba(156, 180, 255, 0.4);
+}
+.milkdown a:hover {
+  border-bottom-color: var(--doc-accent);
+}
+.milkdown code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--doc-code-bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+  color: #e5c7a7;
+}
+
+/* Blockquote: a subtle indentation, italic, lighter color */
+.milkdown blockquote {
+  margin: 1.4em 0;
+  padding: 0 0 0 1.2em;
+  border-left: 2px solid var(--doc-accent);
+  color: var(--doc-quote);
+  font-style: italic;
+}
+.milkdown blockquote p {
+  margin: 0.4em 0;
+}
+
+/* Lists */
+.milkdown ul,
+.milkdown ol {
+  margin: 0.6em 0 1em;
+  padding-left: 1.6em;
+}
+.milkdown li {
+  margin: 0.25em 0;
+}
+.milkdown li > p {
+  margin: 0;
+}
+.milkdown ul li::marker {
+  color: var(--fg-muted);
+}
+.milkdown ol li::marker {
+  color: var(--fg-muted);
+}
+
+/* Task list checkboxes (GFM) */
+.milkdown li[data-task-list-item] {
+  list-style: none;
+  margin-left: -1.3em;
+}
+
+/* Code block */
+.milkdown pre {
+  font-family: var(--font-mono);
+  font-size: 14px;
+  background: var(--doc-code-bg);
+  border: 1px solid var(--doc-rule);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin: 1.2em 0;
+  overflow: auto;
+  line-height: 1.55;
+  color: #dbe0ea;
+}
+.milkdown pre code {
+  background: transparent;
+  padding: 0;
+  color: inherit;
+  font-size: inherit;
+}
+
+/* Horizontal rule */
+.milkdown hr {
+  border: none;
+  border-top: 1px solid var(--doc-rule);
+  margin: 2em auto;
+  width: 40%;
+}
+
+/* Tables (GFM) */
+.milkdown table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 1.4em 0;
+  font-size: 0.95em;
+}
+.milkdown th,
+.milkdown td {
+  border: 1px solid var(--doc-rule);
+  padding: 8px 12px;
+  text-align: left;
+}
+.milkdown th {
+  background: rgba(255, 255, 255, 0.02);
+  font-weight: 600;
+}
+
+/* Images */
+.milkdown img {
+  max-width: 100%;
+  border-radius: 6px;
+  display: block;
+  margin: 1.2em auto;
+}
+
+/* Placeholder caret hint when empty doc (via trailing plugin) */
+.milkdown .ProseMirror p.is-empty::before {
+  content: attr(data-placeholder);
+  color: var(--fg-muted);
+  float: left;
+  height: 0;
+  pointer-events: none;
 }
 
 /* ---- Settings modal ---- */
