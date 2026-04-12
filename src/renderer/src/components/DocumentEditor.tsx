@@ -15,7 +15,7 @@ import Image from '@tiptap/extension-image';
 import { Markdown } from 'tiptap-markdown';
 import MarkdownIt from 'markdown-it';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
-import { DOMParser as PmDOMParser } from '@tiptap/pm/model';
+import { DOMParser as PmDOMParser, Slice } from '@tiptap/pm/model';
 import { bridge } from '../api/bridge';
 import { EditorToolbar } from './EditorToolbar';
 import { useHeadings } from '../store/headings';
@@ -26,14 +26,14 @@ const md = new MarkdownIt({ html: false, linkify: true, typographer: true });
 
 const MarkdownBlockPaste = Extension.create({
   name: 'markdownBlockPaste',
+  priority: 1000,
   addProseMirrorPlugins() {
     return [
       new Plugin({
         key: new PluginKey('markdownBlockPaste'),
         props: {
           handlePaste(view, event) {
-            const clipboardHtml = event.clipboardData?.getData('text/html');
-            if (clipboardHtml) return false;
+            if (event.clipboardData?.types.includes('text/html')) return false;
 
             const text = event.clipboardData?.getData('text/plain');
             if (!text) return false;
@@ -42,15 +42,12 @@ const MarkdownBlockPaste = Extension.create({
             const wrapper = document.createElement('div');
             wrapper.innerHTML = html;
 
-            const slice = PmDOMParser.fromSchema(view.state.schema).parseSlice(wrapper, {
-              preserveWhitespace: false,
-            });
+            const parsed = PmDOMParser.fromSchema(view.state.schema).parse(wrapper);
+            const slice = new Slice(parsed.content, 0, 0);
 
             if (!slice.content.childCount) return false;
 
-            const { tr } = view.state;
-            tr.replaceSelection(slice);
-            view.dispatch(tr);
+            view.dispatch(view.state.tr.replaceSelection(slice));
             return true;
           },
         },
