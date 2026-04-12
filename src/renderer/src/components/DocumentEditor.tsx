@@ -33,8 +33,6 @@ const MarkdownBlockPaste = Extension.create({
         key: new PluginKey('markdownBlockPaste'),
         props: {
           handlePaste(view, event) {
-            if (event.clipboardData?.types.includes('text/html')) return false;
-
             const text = event.clipboardData?.getData('text/plain');
             if (!text) return false;
 
