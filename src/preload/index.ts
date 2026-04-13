@@ -36,13 +36,19 @@ const api: MystApi = {
     delete: (filename) => ipcRenderer.invoke(IpcChannels.Documents.Delete, filename),
   },
   chat: {
-    send: (message, activeDocument) => ipcRenderer.invoke(IpcChannels.Chat.Send, message, activeDocument),
-    sendInCommentThread: (commentId, message) =>
-      ipcRenderer.invoke(IpcChannels.Chat.SendInCommentThread, commentId, message),
-    actionComments: (commentIds, activeDocument) =>
-      ipcRenderer.invoke(IpcChannels.Chat.ActionComments, commentIds, activeDocument),
+    send: (message, activeDocument, displayText) =>
+      ipcRenderer.invoke(IpcChannels.Chat.Send, message, activeDocument, displayText),
     history: () => ipcRenderer.invoke(IpcChannels.Chat.History),
     clear: () => ipcRenderer.invoke(IpcChannels.Chat.Clear),
+    onStarted: (callback) => {
+      const handler = (): void => {
+        callback();
+      };
+      ipcRenderer.on(IpcChannels.Chat.Started, handler);
+      return () => {
+        ipcRenderer.removeListener(IpcChannels.Chat.Started, handler);
+      };
+    },
     onChunk: (callback) => {
       const handler = (_event: Electron.IpcRendererEvent, chunk: string): void => {
         callback(chunk);
@@ -82,10 +88,7 @@ const api: MystApi = {
   comments: {
     list: (docFilename) => ipcRenderer.invoke(IpcChannels.Comments.List, docFilename),
     create: (docFilename, data) => ipcRenderer.invoke(IpcChannels.Comments.Create, docFilename, data),
-    update: (id, changes) => ipcRenderer.invoke(IpcChannels.Comments.Update, id, changes),
     delete: (id) => ipcRenderer.invoke(IpcChannels.Comments.Delete, id),
-    resolve: (id) => ipcRenderer.invoke(IpcChannels.Comments.Resolve, id),
-    reopen: (id) => ipcRenderer.invoke(IpcChannels.Comments.Reopen, id),
     onChanged: (callback) => {
       const handler = (): void => {
         callback();
@@ -98,8 +101,10 @@ const api: MystApi = {
   },
   pendingEdits: {
     list: (docFilename) => ipcRenderer.invoke(IpcChannels.PendingEdits.List, docFilename),
-    accept: (id) => ipcRenderer.invoke(IpcChannels.PendingEdits.Accept, id),
+    accept: (id, override) => ipcRenderer.invoke(IpcChannels.PendingEdits.Accept, id, override),
     reject: (id) => ipcRenderer.invoke(IpcChannels.PendingEdits.Reject, id),
+    patch: (docFilename, id, newString) =>
+      ipcRenderer.invoke(IpcChannels.PendingEdits.Patch, docFilename, id, newString),
     clear: (docFilename) => ipcRenderer.invoke(IpcChannels.PendingEdits.Clear, docFilename),
     onChanged: (callback) => {
       const handler = (): void => {

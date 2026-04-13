@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BrowserWindow } from 'electron';
 import { IpcChannels } from '@shared/ipc-channels';
-import type { Comment, ThreadMessage } from '@shared/types';
+import type { Comment } from '@shared/types';
 import { getCurrentProject } from './projects';
 
 function projectRoot(): string {
@@ -59,8 +59,6 @@ export async function createComment(
     contextBefore: data.contextBefore,
     contextAfter: data.contextAfter,
     message: data.message,
-    thread: [],
-    state: 'open',
     createdAt: new Date().toISOString(),
   };
   comments.push(comment);
@@ -69,7 +67,7 @@ export async function createComment(
   return comment;
 }
 
-async function findCommentById(id: string): Promise<{ comment: Comment; docFilename: string } | null> {
+async function findCommentDocFile(id: string): Promise<string | null> {
   const commentsDir = join(projectRoot(), '.myst', 'comments');
   let entries: string[];
   try {
@@ -81,83 +79,15 @@ async function findCommentById(id: string): Promise<{ comment: Comment; docFilen
     if (!entry.endsWith('.json')) continue;
     const docFilename = entry.replace(/\.json$/, '');
     const comments = await readComments(docFilename);
-    const comment = comments.find((c) => c.id === id);
-    if (comment) return { comment, docFilename };
+    if (comments.some((c) => c.id === id)) return docFilename;
   }
   return null;
 }
 
-export async function updateComment(
-  id: string,
-  changes: Partial<Pick<Comment, 'message' | 'state'>>,
-): Promise<Comment> {
-  const found = await findCommentById(id);
-  if (!found) throw new Error(`Comment ${id} not found.`);
-  const comments = await readComments(found.docFilename);
-  const idx = comments.findIndex((c) => c.id === id);
-  if (idx === -1) throw new Error(`Comment ${id} not found.`);
-  comments[idx] = { ...comments[idx]!, ...changes };
-  await writeComments(found.docFilename, comments);
-  notifyChanged();
-  return comments[idx]!;
-}
-
 export async function deleteComment(id: string): Promise<void> {
-  const found = await findCommentById(id);
-  if (!found) return;
-  const comments = await readComments(found.docFilename);
-  const filtered = comments.filter((c) => c.id !== id);
-  await writeComments(found.docFilename, filtered);
+  const docFilename = await findCommentDocFile(id);
+  if (!docFilename) return;
+  const comments = await readComments(docFilename);
+  await writeComments(docFilename, comments.filter((c) => c.id !== id));
   notifyChanged();
-}
-
-export async function resolveComment(id: string, resolvedBy?: string): Promise<void> {
-  const found = await findCommentById(id);
-  if (!found) return;
-  const comments = await readComments(found.docFilename);
-  const idx = comments.findIndex((c) => c.id === id);
-  if (idx === -1) return;
-  comments[idx] = { ...comments[idx]!, state: 'resolved', resolvedBy };
-  await writeComments(found.docFilename, comments);
-  notifyChanged();
-}
-
-export async function reopenComment(id: string): Promise<void> {
-  const found = await findCommentById(id);
-  if (!found) return;
-  const comments = await readComments(found.docFilename);
-  const idx = comments.findIndex((c) => c.id === id);
-  if (idx === -1) return;
-  const next = { ...comments[idx]!, state: 'open' as const };
-  delete next.resolvedBy;
-  comments[idx] = next;
-  await writeComments(found.docFilename, comments);
-  notifyChanged();
-}
-
-export async function addThreadMessage(id: string, message: ThreadMessage): Promise<Comment> {
-  const found = await findCommentById(id);
-  if (!found) throw new Error(`Comment ${id} not found.`);
-  const comments = await readComments(found.docFilename);
-  const idx = comments.findIndex((c) => c.id === id);
-  if (idx === -1) throw new Error(`Comment ${id} not found.`);
-  const updated: Comment = { ...comments[idx]!, thread: [...comments[idx]!.thread, message] };
-  comments[idx] = updated;
-  await writeComments(found.docFilename, comments);
-  notifyChanged();
-  return updated;
-}
-
-export async function getComment(id: string): Promise<Comment | null> {
-  const found = await findCommentById(id);
-  return found ? found.comment : null;
-}
-
-export async function getCommentsByIds(ids: string[]): Promise<Comment[]> {
-  const result: Comment[] = [];
-  for (const id of ids) {
-    const found = await findCommentById(id);
-    if (found) result.push(found.comment);
-  }
-  return result;
 }

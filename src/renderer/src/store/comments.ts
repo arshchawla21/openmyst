@@ -6,7 +6,8 @@ interface CommentsState {
   comments: Comment[];
   loading: boolean;
   activeDoc: string | null;
-  expandedId: string | null;
+  draft: Comment | null;
+  reopenId: string | null;
 
   load: (docFilename: string) => Promise<void>;
   create: (data: {
@@ -16,16 +17,16 @@ interface CommentsState {
     message: string;
   }) => Promise<Comment | null>;
   delete: (id: string) => Promise<void>;
-  resolve: (id: string) => Promise<void>;
-  reopen: (id: string) => Promise<void>;
-  setExpanded: (id: string | null) => void;
+  setDraft: (draft: Comment | null) => void;
+  setReopen: (id: string | null) => void;
 }
 
 export const useComments = create<CommentsState>((set, get) => ({
   comments: [],
   loading: false,
   activeDoc: null,
-  expandedId: null,
+  draft: null,
+  reopenId: null,
 
   load: async (docFilename) => {
     set({ loading: true, activeDoc: docFilename });
@@ -47,29 +48,9 @@ export const useComments = create<CommentsState>((set, get) => ({
 
   delete: async (id) => {
     await bridge.comments.delete(id);
-    set({
-      comments: get().comments.filter((c) => c.id !== id),
-      expandedId: get().expandedId === id ? null : get().expandedId,
-    });
+    set({ comments: get().comments.filter((c) => c.id !== id) });
   },
 
-  resolve: async (id) => {
-    await bridge.comments.resolve(id);
-    const doc = get().activeDoc;
-    if (doc) {
-      const comments = await bridge.comments.list(doc);
-      set({ comments });
-    }
-  },
-
-  reopen: async (id) => {
-    await bridge.comments.reopen(id);
-    const doc = get().activeDoc;
-    if (doc) {
-      const comments = await bridge.comments.list(doc);
-      set({ comments });
-    }
-  },
-
-  setExpanded: (id) => set({ expandedId: id }),
+  setDraft: (draft) => set({ draft }),
+  setReopen: (id) => set({ reopenId: id }),
 }));

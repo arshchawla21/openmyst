@@ -1,16 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import MarkdownIt from 'markdown-it';
 import type { ChatMessage } from '@shared/types';
 import { useApp } from '../store/app';
 import { useDocuments } from '../store/documents';
 import { useMystLinkHandler } from '../hooks/useMystLinkHandler';
 import { bridge } from '../api/bridge';
-
-const chatMd = new MarkdownIt({ html: false, linkify: true, breaks: true });
-
-function renderMarkdown(text: string): string {
-  return chatMd.render(text);
-}
+import { renderMarkdown } from '../utils/markdown';
 
 function MarkdownContent({ text }: { text: string }): JSX.Element {
   const html = useMemo(() => renderMarkdown(text), [text]);
@@ -77,13 +71,24 @@ function ChatView(): JSX.Element {
   }, [messages, streamingText]);
 
   useEffect(() => {
+    const offStarted = bridge.chat.onStarted(() => {
+      // A new turn has begun (possibly from outside the chat panel, e.g.
+      // Ask Myst). Pull the new user message in and show the typing state
+      // immediately — don't wait for the first stream chunk.
+      setSending(true);
+      setStreamingText('');
+      bridge.chat.history().then(setMessages).catch(console.error);
+    });
     const offChunk = bridge.chat.onChunk((chunk) => {
       setStreamingText((prev) => prev + chunk);
     });
     const offDone = bridge.chat.onChunkDone(() => {
       setStreamingText('');
+      setSending(false);
+      bridge.chat.history().then(setMessages).catch(console.error);
     });
     return () => {
+      offStarted();
       offChunk();
       offDone();
     };
@@ -95,25 +100,15 @@ function ChatView(): JSX.Element {
 
     setInput('');
     setError(null);
-    setSending(true);
-    setStreamingText('');
-
-    const userMsg: ChatMessage = {
-      id: crypto.randomUUID(),
-      role: 'user',
-      content: text,
-      timestamp: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, userMsg]);
-
+    // onStarted / onChunkDone drive `sending`, `streamingText`, and
+    // history refresh — no local optimistic inserts needed.
     try {
-      const assistantMsg = await bridge.chat.send(text, activeFile);
-      setMessages((prev) => [...prev, assistantMsg]);
+      await bridge.chat.send(text, activeFile);
     } catch (err) {
       setError((err as Error).message);
-    } finally {
       setSending(false);
       setStreamingText('');
+    } finally {
       inputRef.current?.focus();
     }
   }, [input, sending, activeFile]);

@@ -2,141 +2,270 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey } from '@tiptap/pm/state';
 import { Decoration, DecorationSet } from '@tiptap/pm/view';
 import type { Node as PmNode } from '@tiptap/pm/model';
-import MarkdownIt from 'markdown-it';
 import type { PendingEdit } from '@shared/types';
-
-const widgetMd = new MarkdownIt({ html: false, linkify: true, breaks: true });
+import { renderMarkdown } from '../utils/markdown';
+import { usePendingEdits } from '../store/pendingEdits';
 
 export const pendingEditsKey = new PluginKey<PendingEditsState>('pendingEdits');
 
+interface PendingRange {
+  from: number;
+  to: number;
+}
+
 interface PendingEditsState {
   decorations: DecorationSet;
-  renderableIds: Set<string>;
+  deleteRanges: PendingRange[];
+  activeEditId: string | null;
+}
+
+interface FlatDoc {
+  flat: string;
+  posMap: number[];
+}
+
+function buildFlatText(doc: PmNode): FlatDoc {
+  const parts: string[] = [];
+  const posMap: number[] = [];
+  let first = true;
+
+  doc.descendants((node, pos) => {
+    if (node.isTextblock) {
+      if (!first) {
+        parts.push('\n');
+        posMap.push(pos);
+      }
+      first = false;
+      let childOffset = 1;
+      node.forEach((child) => {
+        if (child.isText && child.text) {
+          const text = child.text;
+          parts.push(text);
+          for (let i = 0; i < text.length; i++) {
+            posMap.push(pos + childOffset + i);
+          }
+        }
+        childOffset += child.nodeSize;
+      });
+      return false;
+    }
+    return undefined;
+  });
+
+  return { flat: parts.join(''), posMap };
 }
 
 function findPendingEditRange(
   doc: PmNode,
   oldString: string,
   occurrence: number,
-): { from: number; to: number } | null {
+): PendingRange | null {
   if (oldString === '') return null;
-  let remaining = occurrence;
-  let found: { from: number; to: number } | null = null;
+  const { flat, posMap } = buildFlatText(doc);
+  if (flat.length === 0) return null;
 
-  doc.descendants((node, pos) => {
-    if (found) return false;
-    if (!node.isText || !node.text) return;
-    const text = node.text;
-    let searchFrom = 0;
-    while (true) {
-      const idx = text.indexOf(oldString, searchFrom);
-      if (idx === -1) break;
-      remaining--;
-      if (remaining === 0) {
-        found = { from: pos + idx, to: pos + idx + oldString.length };
-        return false;
-      }
-      searchFrom = idx + oldString.length;
-    }
-    return undefined;
-  });
+  // Walk the Nth occurrence in the flattened string — single-line or
+  // multi-line — then map back to PM positions via posMap.
+  let searchFrom = 0;
+  let hit = -1;
+  for (let n = 0; n < occurrence; n++) {
+    hit = flat.indexOf(oldString, searchFrom);
+    if (hit === -1) return null;
+    searchFrom = hit + oldString.length;
+  }
 
-  return found;
+  const startFlat = hit;
+  const endFlat = hit + oldString.length - 1;
+  const fromPos = posMap[startFlat];
+  const lastPos = posMap[endFlat];
+  if (fromPos === undefined || lastPos === undefined) return null;
+  const toPos = lastPos + 1;
+  if (toPos <= fromPos) return null;
+  return { from: fromPos, to: toPos };
 }
 
-function buildDecorations(doc: PmNode, edits: PendingEdit[]): PendingEditsState {
-  const decos: Decoration[] = [];
-  const renderableIds = new Set<string>();
+function quickHash(s: string): string {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
+  return h.toString(36);
+}
 
+function buildState(doc: PmNode, edits: PendingEdit[]): PendingEditsState {
+  const decos: Decoration[] = [];
+  const deleteRanges: PendingRange[] = [];
+
+  // Only the first (active) edit gets decorated.
+  const active = edits[0] ?? null;
+  if (!active) {
+    return { decorations: DecorationSet.empty, deleteRanges: [], activeEditId: null };
+  }
+
+  // Key includes a hash of newString so that when the user (or LLM) patches the
+  // pending content, PM invalidates the cached widget and we re-render the
+  // markdown from the fresh source. Without this the same key would short-
+  // circuit toDOM and the diff would stay stale.
+  const widgetKey = `pending-${active.id}-${quickHash(active.newString)}`;
   const widgetSpec = {
-    stopEvent: () => true,
+    key: widgetKey,
+    side: 1,
     ignoreSelection: true,
+    stopEvent: () => true,
   };
 
-  for (const edit of edits) {
-    if (edit.oldString === '') {
-      // Append-at-end edits get a widget at the doc end
-      const widget = Decoration.widget(
-        doc.content.size,
-        () => buildInsertWidget(edit, true),
-        { key: `pending-${edit.id}`, side: 1, ...widgetSpec },
-      );
-      decos.push(widget);
-      renderableIds.add(edit.id);
-      continue;
-    }
-
-    const range = findPendingEditRange(doc, edit.oldString, edit.occurrence);
-    if (!range) continue;
-
-    decos.push(
-      Decoration.inline(range.from, range.to, {
-        class: 'pending-delete',
-        'data-pending-id': edit.id,
-      }),
+  if (active.oldString === '') {
+    const widget = Decoration.widget(
+      doc.content.size,
+      () => buildInsertWidget(active, true),
+      widgetSpec,
     );
-    decos.push(
-      Decoration.widget(range.to, () => buildInsertWidget(edit, false), {
-        key: `pending-${edit.id}`,
-        side: 1,
-        ...widgetSpec,
-      }),
-    );
-    renderableIds.add(edit.id);
+    decos.push(widget);
+    return {
+      decorations: DecorationSet.create(doc, decos),
+      deleteRanges: [],
+      activeEditId: active.id,
+    };
   }
+
+  const range = findPendingEditRange(doc, active.oldString, active.occurrence);
+  if (!range) {
+    return { decorations: DecorationSet.empty, deleteRanges: [], activeEditId: active.id };
+  }
+
+  deleteRanges.push(range);
+  decos.push(
+    Decoration.inline(range.from, range.to, {
+      class: 'pending-delete',
+      'data-pending-id': active.id,
+    }),
+  );
+  decos.push(
+    Decoration.widget(range.to, () => buildInsertWidget(active, false), widgetSpec),
+  );
 
   return {
     decorations: DecorationSet.create(doc, decos),
-    renderableIds,
+    deleteRanges,
+    activeEditId: active.id,
   };
 }
 
+/**
+ * Build the green-diff insert widget. Renders edit.newString as markdown (with
+ * KaTeX-rendered math via the shared mystMarkdown instance). Click to edit: the
+ * rendered body is swapped for a textarea showing the raw markdown source; on
+ * blur we commit via `usePendingEdits.patch()`, which flows through the IPC
+ * patch channel and writes back to .myst/pending/<doc>.json.
+ */
 function buildInsertWidget(edit: PendingEdit, isAppend: boolean): HTMLElement {
-  const container = document.createElement(isAppend ? 'div' : 'span');
+  const tag = isAppend ? 'div' : 'span';
+  const container = document.createElement(tag);
   container.className = isAppend ? 'pending-insert pending-insert-append' : 'pending-insert';
   container.dataset['pendingId'] = edit.id;
-  container.contentEditable = 'false';
 
-  const text = document.createElement(isAppend ? 'div' : 'span');
-  text.className = 'pending-insert-text';
-  if (isAppend) {
-    text.innerHTML = widgetMd.render(edit.newString);
-  } else {
-    text.innerHTML = widgetMd.renderInline(edit.newString);
-  }
-  container.appendChild(text);
+  let currentValue = edit.newString;
+  let editing = false;
 
-  const actions = document.createElement(isAppend ? 'div' : 'span');
-  actions.className = 'pending-actions';
-  actions.contentEditable = 'false';
+  const renderRead = (): void => {
+    container.innerHTML = '';
+    const body = document.createElement(tag);
+    body.className = 'pending-insert-text';
+    body.dataset['pendingId'] = edit.id;
+    body.title = 'Click to edit';
+    if (currentValue.length === 0) {
+      body.textContent = '(empty — click to write a replacement)';
+      body.dataset['empty'] = 'true';
+    } else {
+      body.innerHTML = renderMarkdown(currentValue);
+    }
+    body.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    body.addEventListener('click', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      enterEditMode();
+    });
+    container.appendChild(body);
+  };
 
-  const acceptBtn = document.createElement('button');
-  acceptBtn.type = 'button';
-  acceptBtn.className = 'pending-action pending-accept';
-  acceptBtn.textContent = 'Accept';
-  acceptBtn.dataset['pendingAction'] = 'accept';
-  acceptBtn.dataset['pendingId'] = edit.id;
+  const enterEditMode = (): void => {
+    if (editing) return;
+    editing = true;
+    container.innerHTML = '';
+    const ta = document.createElement('textarea');
+    ta.className = 'pending-insert-textarea';
+    ta.dataset['pendingId'] = edit.id;
+    ta.value = currentValue;
+    ta.spellcheck = true;
+    const resize = (): void => {
+      ta.style.height = 'auto';
+      ta.style.height = `${ta.scrollHeight}px`;
+    };
+    ta.addEventListener('input', () => {
+      currentValue = ta.value;
+      resize();
+    });
+    ta.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        ta.blur();
+      }
+    });
+    ta.addEventListener('blur', () => {
+      commit();
+    });
+    container.appendChild(ta);
+    // Defer focus so PM doesn't immediately steal it back via its own click
+    // handler — stopEvent keeps PM out, but focus happens after the click
+    // bubble completes.
+    setTimeout(() => {
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+      resize();
+    }, 0);
+  };
 
-  const rejectBtn = document.createElement('button');
-  rejectBtn.type = 'button';
-  rejectBtn.className = 'pending-action pending-reject';
-  rejectBtn.textContent = 'Reject';
-  rejectBtn.dataset['pendingAction'] = 'reject';
-  rejectBtn.dataset['pendingId'] = edit.id;
+  const commit = (): void => {
+    if (!editing) return;
+    editing = false;
+    if (currentValue === edit.newString) {
+      // Nothing changed — just swap back to read view without round-tripping
+      // through IPC.
+      renderRead();
+      return;
+    }
+    // Fire-and-forget: the store update will trigger a widget rebuild with the
+    // new hash key, replacing our DOM with a freshly rendered markdown view.
+    void usePendingEdits.getState().patch(edit.id, currentValue);
+  };
 
-  const discussBtn = document.createElement('button');
-  discussBtn.type = 'button';
-  discussBtn.className = 'pending-action pending-discuss';
-  discussBtn.textContent = 'Discuss';
-  discussBtn.dataset['pendingAction'] = 'discuss';
-  discussBtn.dataset['pendingId'] = edit.id;
-
-  actions.appendChild(acceptBtn);
-  actions.appendChild(rejectBtn);
-  actions.appendChild(discussBtn);
-  container.appendChild(actions);
-
+  renderRead();
   return container;
+}
+
+function mapRanges(ranges: PendingRange[], mapping: { map: (pos: number, assoc?: number) => number }): PendingRange[] {
+  return ranges.map((r) => ({ from: mapping.map(r.from, -1), to: mapping.map(r.to, 1) }));
+}
+
+function trTouchesRanges(tr: { steps: Array<{ getMap: () => { forEach: (cb: (oldStart: number, oldEnd: number) => void) => void } }>; docChanged: boolean }, ranges: PendingRange[]): boolean {
+  if (!tr.docChanged || ranges.length === 0) return false;
+  let blocked = false;
+  tr.steps.forEach((step) => {
+    if (blocked) return;
+    const map = step.getMap();
+    map.forEach((oldStart: number, oldEnd: number) => {
+      if (blocked) return;
+      for (const r of ranges) {
+        // Block if the step's affected range overlaps a pending-delete range.
+        if (oldStart < r.to && oldEnd > r.from) {
+          blocked = true;
+          return;
+        }
+      }
+    });
+  });
+  return blocked;
 }
 
 export function createPendingEditsExtension(): Extension {
@@ -148,18 +277,25 @@ export function createPendingEditsExtension(): Extension {
           key: pendingEditsKey,
           state: {
             init() {
-              return { decorations: DecorationSet.empty, renderableIds: new Set() };
+              return { decorations: DecorationSet.empty, deleteRanges: [], activeEditId: null };
             },
             apply(tr, old) {
               const meta = tr.getMeta(pendingEditsKey) as PendingEdit[] | undefined;
               if (meta !== undefined) {
-                return buildDecorations(tr.doc, meta);
+                return buildState(tr.doc, meta);
               }
               return {
                 decorations: old.decorations.map(tr.mapping, tr.doc),
-                renderableIds: old.renderableIds,
+                deleteRanges: mapRanges(old.deleteRanges, tr.mapping),
+                activeEditId: old.activeEditId,
               };
             },
+          },
+          filterTransaction(tr, state) {
+            const pluginState = pendingEditsKey.getState(state);
+            if (!pluginState) return true;
+            if (tr.getMeta(pendingEditsKey) !== undefined) return true;
+            return !trTouchesRanges(tr, pluginState.deleteRanges);
           },
           props: {
             decorations(state) {

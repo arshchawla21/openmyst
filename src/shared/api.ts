@@ -7,7 +7,6 @@ import type {
   ProjectMeta,
   Result,
   SourceMeta,
-  ThreadMessage,
 } from './types';
 
 export interface MystApi {
@@ -36,11 +35,10 @@ export interface MystApi {
     delete: (filename: string) => Promise<void>;
   };
   chat: {
-    send: (message: string, activeDocument: string) => Promise<ChatMessage>;
-    sendInCommentThread: (commentId: string, message: string) => Promise<ThreadMessage>;
-    actionComments: (commentIds: string[], activeDocument: string) => Promise<ChatMessage>;
+    send: (message: string, activeDocument: string, displayText?: string) => Promise<ChatMessage>;
     history: () => Promise<ChatMessage[]>;
     clear: () => Promise<void>;
+    onStarted: (callback: () => void) => () => void;
     onChunk: (callback: (chunk: string) => void) => () => void;
     onChunkDone: (callback: () => void) => () => void;
   };
@@ -59,18 +57,15 @@ export interface MystApi {
       docFilename: string,
       data: { text: string; contextBefore: string; contextAfter: string; message: string },
     ) => Promise<Comment>;
-    update: (id: string, changes: Partial<Pick<Comment, 'message' | 'state'>>) => Promise<Comment>;
     delete: (id: string) => Promise<void>;
-    resolve: (id: string) => Promise<void>;
-    reopen: (id: string) => Promise<void>;
     onChanged: (callback: () => void) => () => void;
   };
   pendingEdits: {
     list: (docFilename: string) => Promise<PendingEdit[]>;
-    accept: (id: string) => Promise<void>;
+    accept: (id: string, override?: string) => Promise<void>;
     reject: (id: string) => Promise<void>;
+    patch: (docFilename: string, id: string, newString: string) => Promise<void>;
     clear: (docFilename: string) => Promise<void>;
     onChanged: (callback: () => void) => () => void;
   };
 }
-

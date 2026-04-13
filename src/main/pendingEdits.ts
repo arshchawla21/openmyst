@@ -5,8 +5,9 @@ import { BrowserWindow } from 'electron';
 import { IpcChannels } from '@shared/ipc-channels';
 import type { PendingEdit } from '@shared/types';
 import { getCurrentProject } from './projects';
-import { resolveComment } from './comments';
 import { readDocument, writeDocument } from './document';
+import { applyEditOccurrence, applyEditOccurrenceFuzzy, mergePendingEdits } from './editLogic';
+import { log, logError } from './log';
 
 function projectRoot(): string {
   const project = getCurrentProject();
@@ -57,25 +58,50 @@ export async function listPendingEdits(docFilename: string): Promise<PendingEdit
 
 export async function addPendingEdits(
   docFilename: string,
-  edits: Array<{ oldString: string; newString: string; occurrence?: number; fromComment?: string }>,
-): Promise<PendingEdit[]> {
-  const existing = await readPending(docFilename);
-  const newEdits: PendingEdit[] = edits.map((e) => {
-    const edit: PendingEdit = {
-      id: randomUUID(),
-      docFilename,
-      oldString: e.oldString,
-      newString: e.newString,
-      occurrence: e.occurrence ?? 1,
-      createdAt: new Date().toISOString(),
-    };
-    if (e.fromComment) edit.fromComment = e.fromComment;
-    return edit;
+  edits: Array<{ oldString: string; newString: string; occurrence?: number }>,
+): Promise<void> {
+  if (edits.length === 0) return;
+  log('pending', 'add.request', {
+    doc: docFilename,
+    incomingCount: edits.length,
+    previews: edits.map((e) => ({
+      oldPreview: e.oldString.slice(0, 60),
+      newPreview: e.newString.slice(0, 60),
+      occ: e.occurrence ?? 1,
+    })),
   });
-  const combined = [...existing, ...newEdits];
+  const existing = await readPending(docFilename);
+  const batchId = randomUUID();
+  const batchTotal = edits.length;
+  const now = new Date().toISOString();
+
+  const incoming = edits.map((e, idx) => ({
+    oldString: e.oldString,
+    newString: e.newString,
+    occurrence: e.occurrence ?? 1,
+    _idx: idx,
+  }));
+
+  const combined = mergePendingEdits(existing, incoming, (inc) => ({
+    id: randomUUID(),
+    docFilename,
+    oldString: inc.oldString,
+    newString: inc.newString,
+    occurrence: inc.occurrence,
+    createdAt: now,
+    batchId,
+    batchIndex: inc._idx + 1,
+    batchTotal,
+  }));
+
   await writePending(docFilename, combined);
+  log('pending', 'add.committed', {
+    doc: docFilename,
+    existingCount: existing.length,
+    combinedCount: combined.length,
+    replacedInPlace: existing.length + edits.length - combined.length,
+  });
   notifyChanged();
-  return newEdits;
 }
 
 async function findPendingById(id: string): Promise<{ edit: PendingEdit; docFilename: string } | null> {
@@ -96,55 +122,107 @@ async function findPendingById(id: string): Promise<{ edit: PendingEdit; docFile
   return null;
 }
 
-function applyOccurrence(doc: string, oldString: string, newString: string, occurrence: number): string | null {
-  if (oldString === '') {
-    const trimmed = doc.trimEnd();
-    return trimmed + '\n\n' + newString + '\n';
-  }
-  let idx = -1;
-  let nth = 0;
-  let searchFrom = 0;
-  while (nth < occurrence) {
-    idx = doc.indexOf(oldString, searchFrom);
-    if (idx === -1) return null;
-    nth++;
-    if (nth < occurrence) searchFrom = idx + oldString.length;
-  }
-  return doc.slice(0, idx) + newString + doc.slice(idx + oldString.length);
-}
-
-export async function acceptPendingEdit(id: string): Promise<void> {
+export async function acceptPendingEdit(id: string, overrideNewString?: string): Promise<void> {
+  log('pending', 'accept.request', { id, hasOverride: overrideNewString !== undefined });
   const found = await findPendingById(id);
-  if (!found) throw new Error(`Pending edit ${id} not found.`);
+  if (!found) {
+    logError('pending', 'accept.notFound', new Error('pending edit not found'), { id });
+    throw new Error(`Pending edit ${id} not found.`);
+  }
   const { edit, docFilename } = found;
 
+  const effectiveNewString = overrideNewString ?? edit.newString;
   const doc = await readDocument(docFilename);
-  const newDoc = applyOccurrence(doc, edit.oldString, edit.newString, edit.occurrence);
+  log('pending', 'accept.applying', {
+    id,
+    doc: docFilename,
+    oldStringPreview: edit.oldString.slice(0, 120),
+    occurrence: edit.occurrence,
+    docChars: doc.length,
+    oldStringInDoc: edit.oldString === '' ? 'append' : doc.includes(edit.oldString),
+  });
+  let newDoc = applyEditOccurrence(doc, edit.oldString, effectiveNewString, edit.occurrence);
   if (newDoc === null) {
+    // Exact match failed — try whitespace-tolerant fallback. Handles the most
+    // common failure mode: LLM's old_string has subtly different whitespace
+    // (space vs newline, single vs double space) than the on-disk markdown.
+    const fuzzy = applyEditOccurrenceFuzzy(doc, edit.oldString, effectiveNewString, edit.occurrence);
+    if (fuzzy !== null) {
+      log('pending', 'accept.fuzzyMatch', {
+        id,
+        doc: docFilename,
+        oldStringPreview: edit.oldString.slice(0, 120),
+      });
+      newDoc = fuzzy;
+    }
+  }
+  if (newDoc === null) {
+    // Dump enough context to diagnose a mismatch without flooding the log.
+    const oldStr = edit.oldString;
+    const firstLine = oldStr.split('\n')[0] ?? '';
+    const firstWordHit = firstLine.length > 0 ? doc.indexOf(firstLine.slice(0, 20)) : -1;
+    logError(
+      'pending',
+      'accept.notLocated',
+      new Error('applyEditOccurrence returned null'),
+      {
+        id,
+        doc: docFilename,
+        docLen: doc.length,
+        oldStringLen: oldStr.length,
+        oldStringFull: oldStr,
+        occurrence: edit.occurrence,
+        firstLineFuzzyHitAt: firstWordHit,
+        docHead: doc.slice(0, 200),
+        docTail: doc.slice(-200),
+      },
+    );
     throw new Error('Could not locate the original text to apply this edit. Reject it and ask the LLM to retry.');
   }
   await writeDocument(docFilename, newDoc);
+  log('pending', 'accept.written', { id, doc: docFilename, newDocChars: newDoc.length });
   notifyDocumentChanged();
 
   const remaining = (await readPending(docFilename)).filter((e) => e.id !== id);
   await writePending(docFilename, remaining);
+  log('pending', 'accept.cleared', { id, remainingCount: remaining.length });
   notifyChanged();
-
-  if (edit.fromComment && remaining.every((e) => e.fromComment !== edit.fromComment)) {
-    try {
-      await resolveComment(edit.fromComment, edit.id);
-    } catch {
-      // comment may have been deleted
-    }
-  }
 }
 
 export async function rejectPendingEdit(id: string): Promise<void> {
+  log('pending', 'reject.request', { id });
   const found = await findPendingById(id);
-  if (!found) return;
+  if (!found) {
+    log('pending', 'reject.notFound', { id });
+    return;
+  }
   const { docFilename } = found;
   const remaining = (await readPending(docFilename)).filter((e) => e.id !== id);
   await writePending(docFilename, remaining);
+  log('pending', 'reject.cleared', { id, remainingCount: remaining.length });
+  notifyChanged();
+}
+
+export async function patchPendingEditNewString(
+  docFilename: string,
+  id: string,
+  newString: string,
+): Promise<void> {
+  log('pending', 'patch.request', {
+    doc: docFilename,
+    id,
+    newLen: newString.length,
+    newPreview: newString.slice(0, 120),
+  });
+  const edits = await readPending(docFilename);
+  const idx = edits.findIndex((e) => e.id === id);
+  if (idx === -1) {
+    log('pending', 'patch.notFound', { id });
+    return;
+  }
+  edits[idx] = { ...edits[idx]!, newString };
+  await writePending(docFilename, edits);
+  log('pending', 'patch.committed', { id, total: edits.length });
   notifyChanged();
 }
 

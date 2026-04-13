@@ -3,11 +3,20 @@ import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { BrowserWindow } from 'electron';
 import { IpcChannels } from '@shared/ipc-channels';
-import type { ChatMessage, Comment, ThreadMessage } from '@shared/types';
+import type { ChatMessage } from '@shared/types';
 import { getCurrentProject } from './projects';
 import { getOpenRouterKey, getSettings } from './settings';
-import { addPendingEdits } from './pendingEdits';
-import { addThreadMessage, getComment, getCommentsByIds } from './comments';
+import { addPendingEdits, listPendingEdits, patchPendingEditNewString } from './pendingEdits';
+import {
+  cleanChatContent,
+  looksLikeDocumentRequest,
+  parseEditBlocks,
+  tryResolvePendingPatch,
+  validateEdits,
+  type EditOp,
+} from './editLogic';
+import { log, logError } from './log';
+import type { PendingEdit } from '@shared/types';
 
 const OPENROUTER_URL = 'https://openrouter.ai/api/v1/chat/completions';
 
@@ -56,6 +65,15 @@ async function streamCompletion(
   messages: Array<{ role: string; content: string }>,
   emitChunks: boolean,
 ): Promise<string> {
+  const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0);
+  log('chat', 'llm.request', {
+    model,
+    messages: messages.length,
+    roles: messages.map((m) => m.role).join(','),
+    totalChars,
+    emitChunks,
+  });
+  const t0 = Date.now();
   const response = await fetch(OPENROUTER_URL, {
     method: 'POST',
     headers: {
@@ -69,6 +87,7 @@ async function streamCompletion(
 
   if (!response.ok) {
     const body = await response.text();
+    logError('chat', 'llm.http.failed', new Error(body), { status: response.status });
     throw new Error(`OpenRouter error ${response.status}: ${body}`);
   }
 
@@ -112,129 +131,49 @@ async function streamCompletion(
     }
   }
 
+  log('chat', 'llm.response', {
+    chars: fullContent.length,
+    elapsedMs: Date.now() - t0,
+    preview: fullContent.slice(0, 400),
+  });
   return fullContent;
 }
 
-interface EditOp {
-  old_string: string;
-  new_string: string;
-  occurrence?: number;
-}
-
-function extractEdits(text: string): { edits: EditOp[]; chatContent: string } {
-  const regex = /```myst_edit\s*\n([\s\S]*?)```/g;
-  const edits: EditOp[] = [];
-  let chatContent = text;
-
-  let match: RegExpExecArray | null;
-  while ((match = regex.exec(text)) !== null) {
-    try {
-      const raw = match[1]!.trim();
-      const parsed = JSON.parse(raw) as {
-        old_string?: string;
-        new_string?: string;
-        occurrence?: number;
-      };
-      if (typeof parsed.old_string === 'string' && typeof parsed.new_string === 'string') {
-        const op: EditOp = {
-          old_string: parsed.old_string,
-          new_string: parsed.new_string,
-        };
-        if (typeof parsed.occurrence === 'number' && parsed.occurrence > 0) {
-          op.occurrence = parsed.occurrence;
-        }
-        edits.push(op);
-      }
-    } catch {
-      console.log('[myst-chat] failed to parse myst_edit JSON:', match[1]);
-    }
-    chatContent = chatContent.replace(match[0], '');
+async function listPendingEditsSafe(docFilename: string) {
+  try {
+    return await listPendingEdits(docFilename);
+  } catch {
+    return [];
   }
-
-  chatContent = chatContent.replace(/\n{3,}/g, '\n\n').trim();
-  return { edits, chatContent };
 }
 
-interface LocateResult {
-  ok: boolean;
-  count: number;
-  contexts: string[];
-}
-
-function locateEdit(doc: string, edit: EditOp): LocateResult {
-  if (edit.old_string === '') return { ok: true, count: 1, contexts: [] };
-  const contexts: string[] = [];
-  let searchFrom = 0;
-  while (true) {
-    const idx = doc.indexOf(edit.old_string, searchFrom);
-    if (idx === -1) break;
-    const start = Math.max(0, idx - 20);
-    const end = Math.min(doc.length, idx + edit.old_string.length + 20);
-    contexts.push(doc.slice(start, end).replace(/\n/g, ' '));
-    searchFrom = idx + edit.old_string.length;
-  }
-  return { ok: contexts.length === 1, count: contexts.length, contexts };
-}
-
-function validateEdits(doc: string, edits: EditOp[]): { ok: boolean; failures: string[] } {
-  const failures: string[] = [];
-  for (let i = 0; i < edits.length; i++) {
-    const edit = edits[i]!;
-    if (edit.old_string === '') continue;
-    const loc = locateEdit(doc, edit);
-    if (loc.count === 0) {
-      failures.push(`Edit ${i}: old_string not found. old_string: "${edit.old_string.slice(0, 80)}"`);
-    } else if (loc.count > 1) {
-      if (edit.occurrence && edit.occurrence >= 1 && edit.occurrence <= loc.count) continue;
-      const ctxList = loc.contexts.map((c, j) => `  ${j + 1}. "${c}"`).join('\n');
-      failures.push(
-        `Edit ${i}: old_string matches ${loc.count} places. Re-emit with an "occurrence" field set to 1-${loc.count}.\nMatches:\n${ctxList}`,
-      );
-    }
-  }
-  return { ok: failures.length === 0, failures };
-}
-
-const CHANGE_WORDS = /\b(changed|updated|switched|swapped|renamed|replaced|tweaked|edited|modified|added|wrote|dropped|inserted|promotion|start|here'?s)\b/i;
-const REQUEST_WORDS = /\b(write|create|add|change|rename|edit|fix|rewrite|make|extend|continue|update|swap|replace|remove|delete)\b/i;
-
-function looksLikeDocumentRequest(userText: string, llmResponse: string): boolean {
-  return REQUEST_WORDS.test(userText) || CHANGE_WORDS.test(llmResponse);
-}
-
-function cleanChatContent(text: string): string {
-  return text
-    .replace(/```myst_edit\s*\n[\s\S]*?```/g, '')
-    .replace(/`myst_edit`/gi, '')
-    .replace(/myst_edit/gi, '')
-    .replace(/old_string/g, '')
-    .replace(/new_string/g, '')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-}
-
-async function stageEdits(
-  docFilename: string,
-  edits: EditOp[],
-  fromComment?: string,
-): Promise<number> {
+async function stageEdits(docFilename: string, edits: EditOp[]): Promise<number> {
   if (edits.length === 0) return 0;
   await addPendingEdits(
     docFilename,
     edits.map((e) => {
-      const entry: { oldString: string; newString: string; occurrence?: number; fromComment?: string } = {
+      const entry: { oldString: string; newString: string; occurrence?: number } = {
         oldString: e.old_string,
         newString: e.new_string,
       };
       if (e.occurrence !== undefined) entry.occurrence = e.occurrence;
-      if (fromComment !== undefined) entry.fromComment = fromComment;
       return entry;
     }),
   );
   return edits.length;
 }
 
-export async function sendMessage(userText: string, activeDocument: string): Promise<ChatMessage> {
+export async function sendMessage(
+  userText: string,
+  activeDocument: string,
+  displayText?: string,
+): Promise<ChatMessage> {
+  log('chat', 'send.received', {
+    doc: activeDocument,
+    userText,
+    displayText: displayText ?? null,
+    userTextChars: userText.length,
+  });
   const apiKey = await getOpenRouterKey();
   if (!apiKey) throw new Error('OpenRouter API key not set. Add it in Settings.');
 
@@ -248,36 +187,206 @@ export async function sendMessage(userText: string, activeDocument: string): Pro
 
   const docLabel = activeDocument.replace(/\.md$/, '');
 
+  // `displayText` is what the user sees in chat history; `userText` is what
+  // the LLM sees for this turn. When they differ (e.g. Ask Myst from a
+  // comment), the raw prompt scaffolding stays out of the visible thread.
   const userMsg: ChatMessage = {
     id: randomUUID(),
     role: 'user',
-    content: userText,
+    content: displayText ?? userText,
     timestamp: new Date().toISOString(),
   };
   await appendMessage(userMsg);
+  // Tell the renderer a new turn has started so it can show the user
+  // message + typing indicator immediately, before the first chunk arrives.
+  sendToRenderer(IpcChannels.Chat.Started);
+
+  try {
+    return await runTurn({
+      apiKey,
+      model,
+      agentPrompt,
+      docPath,
+      document,
+      sourcesIndex,
+      docLabel,
+      activeDocument,
+      userText,
+      displayText,
+    });
+  } catch (err) {
+    const message = (err as Error).message ?? 'Unknown error';
+    logError('chat', 'send.failed', err);
+    const errorMsg: ChatMessage = {
+      id: randomUUID(),
+      role: 'assistant',
+      content: `⚠️ ${message}`,
+      timestamp: new Date().toISOString(),
+    };
+    await appendMessage(errorMsg);
+    return errorMsg;
+  } finally {
+    // Always unblock the renderer UI — even on error.
+    sendToRenderer(IpcChannels.Chat.ChunkDone);
+  }
+}
+
+interface TurnContext {
+  apiKey: string;
+  model: string;
+  agentPrompt: string;
+  docPath: string;
+  document: string;
+  sourcesIndex: string;
+  docLabel: string;
+  activeDocument: string;
+  userText: string;
+  displayText: string | undefined;
+}
+
+async function runTurn(ctx: TurnContext): Promise<ChatMessage> {
+  const {
+    apiKey,
+    model,
+    agentPrompt,
+    docPath,
+    document,
+    sourcesIndex,
+    docLabel,
+    activeDocument,
+    userText,
+    displayText,
+  } = ctx;
 
   const history = await loadHistory();
+  log('chat', 'turn.start', {
+    doc: activeDocument,
+    model,
+    docChars: document.length,
+    historyLen: history.length,
+    hasDisplayText: displayText !== undefined,
+    isComment: userText.startsWith('COMMENT CONTEXT'),
+  });
+
+  const existingPending = await listPendingEditsSafe(activeDocument);
+  log('chat', 'turn.pending.snapshot', {
+    count: existingPending.length,
+    ids: existingPending.map((e) => e.id).join(','),
+  });
+  const pendingBlock = existingPending.length
+    ? '\n\n========== PENDING EDITS (awaiting user accept/reject — NOT in the document yet) ==========\n' +
+      existingPending
+        .map(
+          (e, i) =>
+            `--- Pending ${i + 1} ---\n` +
+            `old_string: ${JSON.stringify(e.oldString)}\n` +
+            `new_string:\n${e.newString}\n`,
+        )
+        .join('\n') +
+      '==========\n' +
+      'If the user is asking you to adjust a pending edit, you have two options:\n' +
+      '  (a) Full rewrite — emit a myst_edit with the SAME old_string as the pending one; the system replaces that pending entry in place.\n' +
+      '  (b) Surgical tweak — emit a myst_edit whose old_string is a SUBSTRING of the pending new_string above, and whose new_string is the fix. The system will patch that pending edit for you — you do NOT need the text to be in the document yet.\n' +
+      'Either way, NEVER create a parallel pending entry when the user is refining the last one.'
+    : '';
+
+  const tweakEtiquette =
+    '\n\n[Revision etiquette] After proposing any myst_edit, end your chat with a short invitation like "Want me to tweak anything?" so the user can iterate naturally. To revise an existing pending edit, reuse the same old_string — never create a parallel pending entry.';
 
   const systemContent = [
     agentPrompt,
+    tweakEtiquette,
     `\n\n[Active document: ${docLabel}]`,
     `\n\n========== BEGIN ${activeDocument} ==========\n` + document + `\n========== END ${activeDocument} ==========`,
+    pendingBlock,
     sourcesIndex.trim()
       ? '\n\n========== BEGIN sources/index.md (READ-ONLY, not part of the document) ==========\n' + sourcesIndex + '\n========== END sources/index.md =========='
       : '',
   ].join('');
 
+  const llmHistory = history.map((m) => ({ role: m.role, content: m.content }));
+  // Replace the just-appended user turn with the full prompt for the LLM.
+  if (displayText !== undefined && llmHistory.length > 0) {
+    llmHistory[llmHistory.length - 1] = { role: 'user', content: userText };
+  }
+
   const messages: Array<{ role: string; content: string }> = [
     { role: 'system', content: systemContent },
-    ...history.map((m) => ({ role: m.role, content: m.content })),
+    ...llmHistory,
   ];
 
+  log('chat', 'turn.systemPrompt', { chars: systemContent.length });
+
   const fullContent = await streamCompletion(apiKey, model, messages, true);
-  sendToRenderer(IpcChannels.Chat.ChunkDone);
 
-  let { edits, chatContent } = extractEdits(fullContent);
+  let { edits, chatContent } = parseEditBlocks(fullContent);
+  log('chat', 'turn.parsed', {
+    edits: edits.length,
+    editPreviews: edits.map((e) => ({
+      oldLen: e.old_string.length,
+      newLen: e.new_string.length,
+      occ: e.occurrence ?? 1,
+      oldPreview: e.old_string.slice(0, 80),
+      newPreview: e.new_string.slice(0, 80),
+    })),
+    chatPreview: chatContent.slice(0, 200),
+  });
 
-  if (edits.length === 0 && looksLikeDocumentRequest(userText, fullContent)) {
+  // Triage: an edit whose old_string references content from a pending edit
+  // (not yet in the doc on disk) should patch that pending in place, not fail
+  // doc validation. Critical for "write me X → make it shorter" where the
+  // story only lives inside the pending newString so far.
+  let pendingPatched = 0;
+  if (edits.length > 0 && existingPending.length > 0) {
+    const workingPending: PendingEdit[] = existingPending.map((e) => ({ ...e }));
+    const remaining: EditOp[] = [];
+    for (const edit of edits) {
+      if (edit.old_string === '' || document.indexOf(edit.old_string) !== -1) {
+        log('chat', 'triage.doc', {
+          reason: edit.old_string === '' ? 'append' : 'matched-doc',
+          oldPreview: edit.old_string.slice(0, 60),
+        });
+        remaining.push(edit);
+        continue;
+      }
+      const match = tryResolvePendingPatch(
+        edit.old_string,
+        edit.new_string,
+        edit.occurrence ?? 1,
+        workingPending,
+      );
+      if (match) {
+        const target = workingPending[match.index]!;
+        log('chat', 'triage.pendingPatch', {
+          pendingId: target.id,
+          index: match.index,
+          oldPreview: edit.old_string.slice(0, 60),
+          newPreview: edit.new_string.slice(0, 60),
+          patchedLen: match.updatedNewString.length,
+        });
+        await patchPendingEditNewString(activeDocument, target.id, match.updatedNewString);
+        workingPending[match.index] = { ...target, newString: match.updatedNewString };
+        pendingPatched++;
+      } else {
+        log('chat', 'triage.unmatched', {
+          oldPreview: edit.old_string.slice(0, 80),
+        });
+        remaining.push(edit);
+      }
+    }
+    edits = remaining;
+  }
+
+  // Comment-context turns default to chat answers; don't nag the LLM to emit
+  // an edit just because the scaffolded prompt has example change-verbs in it.
+  const isCommentTurn = userText.startsWith('COMMENT CONTEXT');
+  if (
+    !isCommentTurn &&
+    edits.length === 0 &&
+    pendingPatched === 0 &&
+    looksLikeDocumentRequest(userText, fullContent)
+  ) {
+    log('chat', 'retry.missingBlock', { userText: userText.slice(0, 120) });
     const doc = await readProjectFile(docPath);
     const retryMessages = [
       ...messages,
@@ -288,7 +397,7 @@ export async function sendMessage(userText: string, activeDocument: string): Pro
       },
     ];
     const retryContent = await streamCompletion(apiKey, model, retryMessages, false);
-    const retryResult = extractEdits(retryContent);
+    const retryResult = parseEditBlocks(retryContent);
     if (retryResult.edits.length > 0) {
       edits = retryResult.edits;
       if (!chatContent) chatContent = retryResult.chatContent;
@@ -298,6 +407,7 @@ export async function sendMessage(userText: string, activeDocument: string): Pro
   if (edits.length > 0) {
     const validation = validateEdits(document, edits);
     if (!validation.ok) {
+      log('chat', 'retry.validation', { failures: validation.failures });
       const retryMessages = [
         ...messages,
         { role: 'assistant', content: fullContent },
@@ -307,7 +417,7 @@ export async function sendMessage(userText: string, activeDocument: string): Pro
         },
       ];
       const retryContent = await streamCompletion(apiKey, model, retryMessages, false);
-      const retryResult = extractEdits(retryContent);
+      const retryResult = parseEditBlocks(retryContent);
       if (retryResult.edits.length > 0) {
         const retryValidation = validateEdits(document, retryResult.edits);
         if (retryValidation.ok) {
@@ -318,203 +428,21 @@ export async function sendMessage(userText: string, activeDocument: string): Pro
   }
 
   const staged = await stageEdits(activeDocument, edits);
+  const totalApplied = staged + pendingPatched;
+  log('chat', 'turn.done', {
+    staged,
+    pendingPatched,
+    totalApplied,
+    finalChatPreview: chatContent.slice(0, 200),
+  });
 
-  let finalChat = staged > 0 ? (chatContent || 'Ready to review — check the pending edits.') : fullContent;
+  let finalChat = totalApplied > 0 ? (chatContent || 'Ready to review — check the pending edits.') : fullContent;
   finalChat = cleanChatContent(finalChat);
 
   const assistantMsg: ChatMessage = {
     id: randomUUID(),
     role: 'assistant',
-    content: finalChat || (staged > 0 ? `Staged ${staged} edit${staged === 1 ? '' : 's'} for review.` : ''),
-    timestamp: new Date().toISOString(),
-  };
-  await appendMessage(assistantMsg);
-
-  return assistantMsg;
-}
-
-function buildCommentSystemPrompt(
-  agentPrompt: string,
-  docFilename: string,
-  document: string,
-  comment: Comment,
-): string {
-  const docLabel = docFilename.replace(/\.md$/, '');
-  return [
-    agentPrompt,
-    `\n\n[Active document: ${docLabel}]`,
-    `\n\n[Scoped comment-thread mode]`,
-    `\nYou are responding to a single inline comment on a specific passage. The user may ask a question about the passage or request a change.`,
-    `\nIf they ask for a change, emit myst_edit block(s) as usual. If they ask a question, answer briefly in chat.`,
-    `\n\n========== COMMENTED PASSAGE ==========\n${comment.text}\n========== END PASSAGE ==========`,
-    `\n\nThe user's original comment: ${comment.message}`,
-    `\n\n========== BEGIN ${docFilename} ==========\n${document}\n========== END ${docFilename} ==========`,
-  ].join('');
-}
-
-export async function sendMessageInCommentThread(
-  commentId: string,
-  userText: string,
-): Promise<ThreadMessage> {
-  const apiKey = await getOpenRouterKey();
-  if (!apiKey) throw new Error('OpenRouter API key not set. Add it in Settings.');
-
-  const comment = await getComment(commentId);
-  if (!comment) throw new Error('Comment not found.');
-
-  const settings = await getSettings();
-  const model = settings.defaultModel;
-
-  const agentPrompt = await readProjectFile('agent.md');
-  const docPath = `documents/${comment.docFilename}`;
-  const document = await readProjectFile(docPath);
-
-  const userThreadMsg: ThreadMessage = {
-    role: 'user',
-    content: userText,
-    timestamp: new Date().toISOString(),
-  };
-  await addThreadMessage(commentId, userThreadMsg);
-
-  const systemContent = buildCommentSystemPrompt(agentPrompt, comment.docFilename, document, comment);
-  const threadHistory = [...comment.thread, userThreadMsg];
-
-  const messages: Array<{ role: string; content: string }> = [
-    { role: 'system', content: systemContent },
-    ...threadHistory.map((m) => ({ role: m.role, content: m.content })),
-  ];
-
-  const fullContent = await streamCompletion(apiKey, model, messages, true);
-  sendToRenderer(IpcChannels.Chat.ChunkDone);
-
-  let { edits, chatContent } = extractEdits(fullContent);
-
-  if (edits.length > 0) {
-    const validation = validateEdits(document, edits);
-    if (!validation.ok) {
-      const retryMessages = [
-        ...messages,
-        { role: 'assistant', content: fullContent },
-        {
-          role: 'user',
-          content: `Some edits could not be located unambiguously:\n${validation.failures.join('\n\n')}\n\nRe-emit the failed myst_edit blocks with a more specific old_string, or add an "occurrence" field to pick which match you meant.`,
-        },
-      ];
-      const retryContent = await streamCompletion(apiKey, model, retryMessages, false);
-      const retryResult = extractEdits(retryContent);
-      if (retryResult.edits.length > 0) {
-        const retryValidation = validateEdits(document, retryResult.edits);
-        if (retryValidation.ok) {
-          edits = retryResult.edits;
-          if (!chatContent) chatContent = retryResult.chatContent;
-        }
-      }
-    }
-  }
-
-  await stageEdits(comment.docFilename, edits, comment.id);
-
-  const finalChat = cleanChatContent(chatContent || fullContent) || (edits.length > 0 ? `Staged ${edits.length} edit${edits.length === 1 ? '' : 's'} for review.` : '');
-
-  const assistantThreadMsg: ThreadMessage = {
-    role: 'assistant',
-    content: finalChat,
-    timestamp: new Date().toISOString(),
-  };
-  await addThreadMessage(commentId, assistantThreadMsg);
-
-  return assistantThreadMsg;
-}
-
-export async function actionComments(
-  commentIds: string[],
-  activeDocument: string,
-): Promise<ChatMessage> {
-  const apiKey = await getOpenRouterKey();
-  if (!apiKey) throw new Error('OpenRouter API key not set. Add it in Settings.');
-
-  const comments = await getCommentsByIds(commentIds);
-  if (comments.length === 0) throw new Error('No comments to action.');
-
-  const settings = await getSettings();
-  const model = settings.defaultModel;
-
-  const agentPrompt = await readProjectFile('agent.md');
-  const docPath = `documents/${activeDocument}`;
-  const document = await readProjectFile(docPath);
-  const docLabel = activeDocument.replace(/\.md$/, '');
-
-  const commentSummary = comments
-    .map(
-      (c, i) =>
-        `Comment ${i + 1} [id: ${c.id}]:\n  Passage: "${c.text}"\n  Note: ${c.message}`,
-    )
-    .join('\n\n');
-
-  const userPromptText = `Please action these inline comments on the document. For each comment, emit myst_edit block(s) that address what the user asked for. If a comment is a question rather than a change request, include a short answer for it in your chat reply instead of an edit.\n\n${commentSummary}`;
-
-  const userMsg: ChatMessage = {
-    id: randomUUID(),
-    role: 'user',
-    content: `Action ${comments.length} comment${comments.length === 1 ? '' : 's'}.`,
-    timestamp: new Date().toISOString(),
-  };
-  await appendMessage(userMsg);
-
-  const history = await loadHistory();
-
-  const systemContent = [
-    agentPrompt,
-    `\n\n[Active document: ${docLabel}]`,
-    `\n\n========== BEGIN ${activeDocument} ==========\n${document}\n========== END ${activeDocument} ==========`,
-  ].join('');
-
-  const messages: Array<{ role: string; content: string }> = [
-    { role: 'system', content: systemContent },
-    ...history.slice(0, -1).map((m) => ({ role: m.role, content: m.content })),
-    { role: 'user', content: userPromptText },
-  ];
-
-  const fullContent = await streamCompletion(apiKey, model, messages, true);
-  sendToRenderer(IpcChannels.Chat.ChunkDone);
-
-  let { edits, chatContent } = extractEdits(fullContent);
-
-  if (edits.length > 0) {
-    const validation = validateEdits(document, edits);
-    if (!validation.ok) {
-      const retryMessages = [
-        ...messages,
-        { role: 'assistant', content: fullContent },
-        {
-          role: 'user',
-          content: `Some edits could not be located unambiguously:\n${validation.failures.join('\n\n')}\n\nRe-emit the failed myst_edit blocks with a more specific old_string, or add an "occurrence" field to pick which match you meant.`,
-        },
-      ];
-      const retryContent = await streamCompletion(apiKey, model, retryMessages, false);
-      const retryResult = extractEdits(retryContent);
-      if (retryResult.edits.length > 0) {
-        const retryValidation = validateEdits(document, retryResult.edits);
-        if (retryValidation.ok) {
-          edits = retryResult.edits;
-        }
-      }
-    }
-  }
-
-  // Stage with comment linkage: match edits to comments by substring of old_string
-  for (const edit of edits) {
-    const linked = comments.find((c) => edit.old_string.includes(c.text) || c.text.includes(edit.old_string));
-    await stageEdits(activeDocument, [edit], linked?.id);
-  }
-
-  const staged = edits.length;
-  const finalChat = cleanChatContent(chatContent || fullContent) || (staged > 0 ? `Staged ${staged} edit${staged === 1 ? '' : 's'} for review.` : '');
-
-  const assistantMsg: ChatMessage = {
-    id: randomUUID(),
-    role: 'assistant',
-    content: finalChat,
+    content: finalChat || (totalApplied > 0 ? `Staged ${totalApplied} edit${totalApplied === 1 ? '' : 's'} for review.` : ''),
     timestamp: new Date().toISOString(),
   };
   await appendMessage(assistantMsg);

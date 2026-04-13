@@ -27,9 +27,9 @@ import { usePendingEdits } from '../store/pendingEdits';
 import { useComments } from '../store/comments';
 import { createPendingEditsExtension, pendingEditsKey } from '../tiptap/pendingEditPlugin';
 import { createCommentHighlightExtension, commentHighlightKey } from '../tiptap/commentHighlightPlugin';
+import { createMathRenderExtension } from '../tiptap/mathRenderPlugin';
 import { PendingEditsBanner } from './PendingEditsBanner';
 import { CommentFloatingButton } from './CommentFloatingButton';
-import { CommentsPanel } from './CommentsPanel';
 import type { Heading } from '@shared/types';
 import type { Editor } from '@tiptap/core';
 
@@ -163,6 +163,7 @@ function TiptapEditor({ initialValue, editable, onMarkdownChange, onEditorReady,
   const [linkPlugin] = useState(() => createMystLinkClickPlugin((href) => onLinkClickRef.current(href)));
   const [pendingPlugin] = useState(() => createPendingEditsExtension());
   const [commentPlugin] = useState(() => createCommentHighlightExtension());
+  const [mathPlugin] = useState(() => createMathRenderExtension());
 
   const editor = useEditor({
     editable,
@@ -185,6 +186,7 @@ function TiptapEditor({ initialValue, editable, onMarkdownChange, onEditorReady,
       linkPlugin,
       pendingPlugin,
       commentPlugin,
+      mathPlugin,
       Markdown.configure({
         html: false,
         transformPastedText: true,
@@ -233,7 +235,8 @@ export function DocumentEditor({ projectPath, activeFile }: DocumentEditorProps)
   const commentsStore = useComments();
   const pendingEdits = pendingStore.edits;
   const comments = commentsStore.comments;
-  const editorLocked = pendingEdits.length > 0;
+  const draftComment = commentsStore.draft;
+  const activeEdit = pendingEdits[0] ?? null;
 
   const handleLinkClick = useCallback((href: string) => {
     if (!href.endsWith('.md')) return;
@@ -325,64 +328,51 @@ export function DocumentEditor({ projectPath, activeFile }: DocumentEditorProps)
     };
   }, []);
 
+  const prevActiveKeyRef = useRef<string | null>(null);
   useEffect(() => {
     if (!editor) return;
-    const tr = editor.state.tr.setMeta(pendingEditsKey, pendingEdits);
+    // Rebuild the widget when the active edit identity OR its newString
+    // changes. The plugin's own key hashes newString, so a no-op dispatch is
+    // cheap-ish but we still gate here to avoid redundant transactions.
+    // Typing inside the textarea does NOT update the store until blur, so this
+    // doesn't fire mid-keystroke.
+    const nextKey = activeEdit ? `${activeEdit.id}|${activeEdit.newString}` : null;
+    if (prevActiveKeyRef.current === nextKey) return;
+    prevActiveKeyRef.current = nextKey;
+    const tr = editor.state.tr.setMeta(pendingEditsKey, activeEdit ? [activeEdit] : []);
     editor.view.dispatch(tr);
-  }, [editor, pendingEdits, contentVersion]);
+  }, [editor, activeEdit, contentVersion]);
 
   useEffect(() => {
     if (!editor) return;
-    const tr = editor.state.tr.setMeta(commentHighlightKey, comments);
+    const merged = draftComment ? [...comments, draftComment] : comments;
+    const tr = editor.state.tr.setMeta(commentHighlightKey, merged);
     editor.view.dispatch(tr);
-  }, [editor, comments, contentVersion]);
+  }, [editor, comments, draftComment, contentVersion]);
 
-  const handleAcceptPending = useCallback(async (id: string) => {
+  const [pendingError, setPendingError] = useState<string | null>(null);
+
+  const handleAcceptActive = useCallback(async () => {
+    if (!activeEdit) return;
     try {
-      await usePendingEdits.getState().accept(id);
+      await usePendingEdits.getState().accept(activeEdit.id);
+      setPendingError(null);
     } catch (err) {
       console.error('accept pending failed', err);
+      setPendingError((err as Error).message);
     }
-  }, []);
+  }, [activeEdit]);
 
-  const handleRejectPending = useCallback(async (id: string) => {
+  const handleRejectActive = useCallback(async () => {
+    if (!activeEdit) return;
     try {
-      await usePendingEdits.getState().reject(id);
+      await usePendingEdits.getState().reject(activeEdit.id);
+      setPendingError(null);
     } catch (err) {
       console.error('reject pending failed', err);
+      setPendingError((err as Error).message);
     }
-  }, []);
-
-  const handleDiscussPending = useCallback((id: string) => {
-    const edit = usePendingEdits.getState().edits.find((e) => e.id === id);
-    if (edit?.fromComment) {
-      useComments.getState().setExpanded(edit.fromComment);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!editor) return;
-    const viewDom = editor.view.dom as HTMLElement;
-    const handler = (e: MouseEvent): void => {
-      const target = e.target as HTMLElement;
-      const btn = target.closest('[data-pending-action]') as HTMLElement | null;
-      if (!btn) return;
-      e.preventDefault();
-      e.stopPropagation();
-      const action = btn.dataset['pendingAction'];
-      const id = btn.dataset['pendingId'];
-      if (!id) return;
-      if (action === 'accept') void handleAcceptPending(id);
-      else if (action === 'reject') void handleRejectPending(id);
-      else if (action === 'discuss') handleDiscussPending(id);
-    };
-    viewDom.addEventListener('mousedown', handler, true);
-    viewDom.addEventListener('click', handler, true);
-    return () => {
-      viewDom.removeEventListener('mousedown', handler, true);
-      viewDom.removeEventListener('click', handler, true);
-    };
-  }, [editor, handleAcceptPending, handleRejectPending, handleDiscussPending]);
+  }, [activeEdit]);
 
   const activeFileRefInner = useRef(activeFile);
   activeFileRefInner.current = activeFile;
@@ -419,9 +409,19 @@ export function DocumentEditor({ projectPath, activeFile }: DocumentEditorProps)
   const activeFileRef = useRef(activeFile);
   activeFileRef.current = activeFile;
 
+  // Autosave must be suspended while pending edits exist. Otherwise TipTap's
+  // re-parse → re-serialize cycle subtly renormalizes whitespace, and the
+  // file diverges from the `oldString` captured when the LLM staged the edit.
+  // That makes accepting the next edit in the batch fail with "could not
+  // locate the original text".
+  const pendingEditsCount = pendingEdits.length;
+  const pendingCountRef = useRef(pendingEditsCount);
+  pendingCountRef.current = pendingEditsCount;
+
   const scheduleSave = useCallback(
     (markdown: string): void => {
       if (markdown === lastSavedRef.current) return;
+      if (pendingCountRef.current > 0) return;
       setStatus('saving');
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current);
       saveTimerRef.current = setTimeout(() => {
@@ -442,10 +442,6 @@ export function DocumentEditor({ projectPath, activeFile }: DocumentEditorProps)
 
   const handleEditorReady = useCallback((ed: Editor) => {
     setEditor(ed);
-  }, []);
-
-  const handleClearAllPending = useCallback(() => {
-    void usePendingEdits.getState().clearAll();
   }, []);
 
   const surfaceStyle = { '--doc-font-size': `${fontSize}px` } as CSSProperties;
@@ -472,22 +468,26 @@ export function DocumentEditor({ projectPath, activeFile }: DocumentEditorProps)
     <div className="document-editor" style={surfaceStyle}>
       <EditorToolbar editor={editor} fontSize={fontSize} onFontSize={setFontSize} />
       {showFind && <FindBar editor={editor} onClose={() => setShowFind(false)} />}
-      <PendingEditsBanner count={pendingEdits.length} onClearAll={handleClearAllPending} />
-      <div className={`document-body ${editorLocked ? 'document-locked' : ''}`}>
+      <PendingEditsBanner
+        activeEdit={activeEdit}
+        error={pendingError}
+        onAccept={() => void handleAcceptActive()}
+        onReject={() => void handleRejectActive()}
+      />
+      <div className="document-body">
         <div className="document-scroll">
           <div className="document-page">
             <TiptapEditor
               key={`${projectPath}-${activeFile}-${contentVersion}`}
               initialValue={initialValue}
-              editable={!editorLocked}
+              editable={true}
               onMarkdownChange={scheduleSave}
               onEditorReady={handleEditorReady}
               onLinkClick={handleLinkClick}
             />
           </div>
-          <CommentFloatingButton editor={editor} disabled={editorLocked} />
+          <CommentFloatingButton editor={editor} activeFile={activeFile} disabled={false} />
         </div>
-        <CommentsPanel activeFile={activeFile} />
       </div>
       <SaveIndicator status={status} />
     </div>

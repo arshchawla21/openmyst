@@ -1,31 +1,49 @@
+import type { PendingEdit } from '@shared/types';
+
 interface PendingEditsBannerProps {
-  count: number;
-  onClearAll: () => void;
+  activeEdit: PendingEdit | null;
+  error: string | null;
+  onAccept: () => void;
+  onReject: () => void;
 }
 
-export function PendingEditsBanner({ count, onClearAll }: PendingEditsBannerProps): JSX.Element | null {
-  if (count === 0) return null;
+export function PendingEditsBanner({
+  activeEdit,
+  error,
+  onAccept,
+  onReject,
+}: PendingEditsBannerProps): JSX.Element | null {
+  if (!activeEdit) return null;
 
-  const showClearAll = count > 3;
+  const counter = `${activeEdit.batchIndex}/${activeEdit.batchTotal}`;
   const label =
-    count === 1
-      ? '1 pending edit — accept or reject to continue editing'
-      : `${count} pending edits — accept or reject each to continue editing`;
+    activeEdit.batchTotal === 1 ? 'Pending edit' : `Pending edit ${counter}`;
 
   return (
     <div className="pending-banner">
-      <span className="pending-banner-dot" />
-      <span className="pending-banner-label">{label}</span>
-      {showClearAll && (
-        <button
-          type="button"
-          className="pending-banner-clear"
-          onClick={onClearAll}
-          title="Reject all pending edits"
-        >
-          Reject all
-        </button>
-      )}
+      <div className="pending-banner-row">
+        <span className="pending-banner-dot" />
+        <span className="pending-banner-label">{label}</span>
+        <div className="pending-banner-actions">
+          <button
+            type="button"
+            className="pending-banner-btn pending-banner-reject"
+            onClick={onReject}
+            title="Reject"
+          >
+            Reject
+          </button>
+          <button
+            type="button"
+            className="pending-banner-btn pending-banner-accept"
+            onClick={onAccept}
+            title="Accept"
+          >
+            Accept
+          </button>
+        </div>
+      </div>
+      {error && <div className="pending-banner-error">⚠️ {error}</div>}
     </div>
   );
 }

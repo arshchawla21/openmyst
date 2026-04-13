@@ -1,0 +1,241 @@
+export interface EditOp {
+  old_string: string;
+  new_string: string;
+  occurrence?: number;
+}
+
+export interface ParseResult {
+  edits: EditOp[];
+  chatContent: string;
+}
+
+export interface ValidationResult {
+  ok: boolean;
+  failures: string[];
+}
+
+export interface LocateResult {
+  ok: boolean;
+  count: number;
+  contexts: string[];
+}
+
+export function parseEditBlocks(text: string): ParseResult {
+  const regex = /```myst_edit\s*\n([\s\S]*?)```/g;
+  const edits: EditOp[] = [];
+  let chatContent = text;
+
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    try {
+      const raw = match[1]!.trim();
+      const parsed = JSON.parse(raw) as {
+        old_string?: string;
+        new_string?: string;
+        occurrence?: number;
+      };
+      if (typeof parsed.old_string === 'string' && typeof parsed.new_string === 'string') {
+        // Drop no-op edits (both sides empty) — they can't be applied and
+        // would surface as a ghost "empty" pending edit in the UI.
+        if (parsed.old_string === '' && parsed.new_string === '') {
+          // skip
+        } else {
+          const op: EditOp = {
+            old_string: parsed.old_string,
+            new_string: parsed.new_string,
+          };
+          if (typeof parsed.occurrence === 'number' && parsed.occurrence > 0) {
+            op.occurrence = parsed.occurrence;
+          }
+          edits.push(op);
+        }
+      }
+    } catch {
+      // swallow malformed JSON; caller handles empty edits list.
+    }
+    chatContent = chatContent.replace(match[0], '');
+  }
+
+  chatContent = chatContent.replace(/\n{3,}/g, '\n\n').trim();
+  return { edits, chatContent };
+}
+
+export function locateEdit(doc: string, edit: EditOp): LocateResult {
+  if (edit.old_string === '') return { ok: true, count: 1, contexts: [] };
+  const contexts: string[] = [];
+  let searchFrom = 0;
+  while (true) {
+    const idx = doc.indexOf(edit.old_string, searchFrom);
+    if (idx === -1) break;
+    const start = Math.max(0, idx - 20);
+    const end = Math.min(doc.length, idx + edit.old_string.length + 20);
+    contexts.push(doc.slice(start, end).replace(/\n/g, ' '));
+    searchFrom = idx + edit.old_string.length;
+  }
+  return { ok: contexts.length === 1, count: contexts.length, contexts };
+}
+
+export function validateEdits(doc: string, edits: EditOp[]): ValidationResult {
+  const failures: string[] = [];
+  for (let i = 0; i < edits.length; i++) {
+    const edit = edits[i]!;
+    if (edit.old_string === '') continue;
+    const loc = locateEdit(doc, edit);
+    if (loc.count === 0) {
+      failures.push(
+        `Edit ${i}: old_string not found. old_string: "${edit.old_string.slice(0, 80)}"`,
+      );
+    } else if (loc.count > 1) {
+      if (edit.occurrence && edit.occurrence >= 1 && edit.occurrence <= loc.count) continue;
+      const ctxList = loc.contexts.map((c, j) => `  ${j + 1}. "${c}"`).join('\n');
+      failures.push(
+        `Edit ${i}: old_string matches ${loc.count} places. Re-emit with an "occurrence" field set to 1-${loc.count}.\nMatches:\n${ctxList}`,
+      );
+    }
+  }
+  return { ok: failures.length === 0, failures };
+}
+
+export function applyEditOccurrence(
+  doc: string,
+  oldString: string,
+  newString: string,
+  occurrence: number,
+): string | null {
+  if (oldString === '') {
+    const trimmed = doc.trimEnd();
+    if (trimmed.length === 0) return newString + '\n';
+    return trimmed + '\n\n' + newString + '\n';
+  }
+  let idx = -1;
+  let nth = 0;
+  let searchFrom = 0;
+  while (nth < occurrence) {
+    idx = doc.indexOf(oldString, searchFrom);
+    if (idx === -1) return null;
+    nth++;
+    if (nth < occurrence) searchFrom = idx + oldString.length;
+  }
+  return doc.slice(0, idx) + newString + doc.slice(idx + oldString.length);
+}
+
+function escapeRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Whitespace-tolerant variant of applyEditOccurrence. Used as a fallback when
+ * the exact match fails, which usually means whitespace drift: the LLM sent an
+ * old_string with a single space where the file on disk has a newline (or
+ * vice versa), or tiptap's markdown round-trip collapsed "  " into " ". Any
+ * run of whitespace in oldString matches any run of whitespace in the doc.
+ * Leading/trailing whitespace in oldString is ignored for locating, then we
+ * splice back exactly over the matched range.
+ */
+export function applyEditOccurrenceFuzzy(
+  doc: string,
+  oldString: string,
+  newString: string,
+  occurrence: number,
+): string | null {
+  if (oldString === '') return null; // append has no fuzzy mode
+  const trimmedNeedle = oldString.replace(/^\s+|\s+$/g, '');
+  if (trimmedNeedle.length === 0) return null;
+
+  // Build a regex: split on any whitespace, escape literals, rejoin with \s+.
+  const parts = trimmedNeedle.split(/\s+/).map(escapeRegex);
+  const pattern = new RegExp(parts.join('\\s+'), 'g');
+
+  let match: RegExpExecArray | null;
+  let nth = 0;
+  while ((match = pattern.exec(doc)) !== null) {
+    nth++;
+    if (nth === occurrence) {
+      const start = match.index;
+      const end = start + match[0].length;
+      return doc.slice(0, start) + newString + doc.slice(end);
+    }
+    if (match.index === pattern.lastIndex) pattern.lastIndex++;
+  }
+  return null;
+}
+
+const CHANGE_WORDS = /\b(changed|updated|switched|swapped|renamed|replaced|tweaked|edited|modified|added|wrote|dropped|inserted|promotion|start|here'?s)\b/i;
+const REQUEST_WORDS = /\b(write|create|add|change|rename|edit|fix|rewrite|make|extend|continue|update|swap|replace|remove|delete)\b/i;
+
+export function looksLikeDocumentRequest(userText: string, llmResponse: string): boolean {
+  return REQUEST_WORDS.test(userText) || CHANGE_WORDS.test(llmResponse);
+}
+
+export interface PendingLike {
+  oldString: string;
+  newString: string;
+  occurrence: number;
+}
+
+/**
+ * Merge a freshly-staged batch into the existing pending list, treating a new
+ * edit whose (oldString, occurrence) matches an existing one as a REVISION
+ * (same slot, new newString) instead of a second entry. This lets the user
+ * say "make it shorter" in chat and have the LLM update the pending edit in
+ * place rather than piling up parallel pending entries.
+ *
+ * Append-mode edits (oldString === '') all collide with each other, since
+ * there's no way to tell which append the user means — so a new append
+ * replaces the most recent existing append.
+ */
+export function mergePendingEdits<
+  T extends PendingLike,
+  U extends PendingLike,
+>(existing: T[], incoming: U[], makeNew: (u: U) => T): T[] {
+  const result = [...existing];
+  for (const inc of incoming) {
+    const matchIdx = result.findIndex(
+      (e) => e.oldString === inc.oldString && e.occurrence === inc.occurrence,
+    );
+    if (matchIdx >= 0) {
+      const prev = result[matchIdx]!;
+      result[matchIdx] = { ...prev, newString: inc.newString };
+    } else {
+      result.push(makeNew(inc));
+    }
+  }
+  return result;
+}
+
+/**
+ * Try to resolve an edit against the text of existing pending edits (not
+ * against the document). Used when the LLM emits a sub-edit whose old_string
+ * isn't in the doc yet — it's inside a pending edit's new_string — because the
+ * user is asking to revise the pending content before accepting it. Returns
+ * the index of the first pending edit that contains oldString (with the given
+ * occurrence) and the patched newString.
+ */
+export function tryResolvePendingPatch(
+  oldString: string,
+  newString: string,
+  occurrence: number,
+  pending: Array<{ newString: string }>,
+): { index: number; updatedNewString: string } | null {
+  if (oldString === '') return null;
+  for (let i = 0; i < pending.length; i++) {
+    const entry = pending[i];
+    if (!entry) continue;
+    const result = applyEditOccurrence(entry.newString, oldString, newString, occurrence);
+    if (result !== null) {
+      return { index: i, updatedNewString: result };
+    }
+  }
+  return null;
+}
+
+export function cleanChatContent(text: string): string {
+  return text
+    .replace(/```myst_edit\s*\n[\s\S]*?```/g, '')
+    .replace(/`myst_edit`/gi, '')
+    .replace(/myst_edit/gi, '')
+    .replace(/old_string/g, '')
+    .replace(/new_string/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
