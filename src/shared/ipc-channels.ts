@@ -57,4 +57,8 @@ export const IpcChannels = {
   Wiki: {
     Graph: 'wiki:graph',
   },
+  BugReport: {
+    Submit: 'bug-report:submit',
+    RendererLog: 'bug-report:renderer-log',
+  },
 } as const;

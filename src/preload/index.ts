@@ -119,6 +119,11 @@ const api: MystApi = {
   wiki: {
     graph: () => ipcRenderer.invoke(IpcChannels.Wiki.Graph),
   },
+  bugReport: {
+    submit: (input) => ipcRenderer.invoke(IpcChannels.BugReport.Submit, input),
+    rendererLog: (scope, event, message) =>
+      ipcRenderer.invoke(IpcChannels.BugReport.RendererLog, scope, event, message),
+  },
 };
 
 contextBridge.exposeInMainWorld('myst', api);

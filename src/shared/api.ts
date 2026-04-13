@@ -72,4 +72,8 @@ export interface MystApi {
   wiki: {
     graph: () => Promise<WikiGraph>;
   };
+  bugReport: {
+    submit: (input: { title: string; description: string }) => Promise<void>;
+    rendererLog: (scope: string, event: string, message: string) => Promise<void>;
+  };
 }

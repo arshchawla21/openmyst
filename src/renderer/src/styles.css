@@ -1893,3 +1893,30 @@ h3 {
   border: 1px solid var(--border);
 }
 
+/* ---- Bug report modal ---- */
+.field-label {
+  display: block;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+.modal textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--font-ui);
+  font-size: 13px;
+  color: var(--fg);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 10px;
+  resize: vertical;
+  min-height: 120px;
+}
+.modal textarea:focus {
+  outline: none;
+  border-color: var(--accent, #4f9eff);
+}
+

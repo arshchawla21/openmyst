@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useApp } from '../store/app';
 import { bridge } from '../api/bridge';
+import { BugReportModal } from './BugReportModal';
 
 export function SettingsModal(): JSX.Element {
   const { settings, closeSettings, refreshSettings } = useApp();
@@ -8,6 +9,7 @@ export function SettingsModal(): JSX.Element {
   const [model, setModel] = useState(settings?.defaultModel ?? '');
   const [saving, setSaving] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
+  const [showBugReport, setShowBugReport] = useState(false);
 
   useEffect(() => {
     if (settings) setModel(settings.defaultModel);
@@ -109,7 +111,22 @@ export function SettingsModal(): JSX.Element {
         </section>
 
         {localError && <div className="error">{localError}</div>}
+
+        <section className="modal-section">
+          <h3>Report a bug</h3>
+          <p className="muted">
+            Found something broken? Opens a pre-filled GitHub issue with your recent
+            session logs attached. You review and post — nothing is sent automatically.
+          </p>
+          <div className="row">
+            <button type="button" onClick={() => setShowBugReport(true)}>
+              Report a bug
+            </button>
+          </div>
+        </section>
       </div>
+
+      {showBugReport && <BugReportModal onClose={() => setShowBugReport(false)} />}
     </div>
   );
 }
