@@ -7,7 +7,7 @@ import { DEFAULT_MODEL } from '@shared/types';
 /**
  * User-wide settings, stored outside any project. Lives at
  * `<userData>/settings.json` — on macOS that's
- * `~/Library/Application Support/myst-review/settings.json`.
+ * `~/Library/Application Support/openmyst/settings.json`.
  *
  * The OpenRouter API key is encrypted at rest via Electron's `safeStorage`
  * (keychain on macOS, DPAPI on Windows, libsecret on Linux). We store the

@@ -28,7 +28,7 @@ A desktop writing and research companion. You write in a markdown editor, an LLM
 
 ```bash
 git clone <this repo>
-cd myst-review
+cd openmyst
 npm install
 npm run dev
 ```

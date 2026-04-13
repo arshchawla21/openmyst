@@ -6,7 +6,7 @@ Day-to-day workflow. If you just cloned the repo, this is the page that gets you
 
 ```bash
 git clone <this repo>
-cd myst-review
+cd openmyst
 npm install
 ```
 

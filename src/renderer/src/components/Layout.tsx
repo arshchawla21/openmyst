@@ -20,7 +20,7 @@ export function Layout(): JSX.Element {
     <div className="layout">
       <header className="titlebar">
         <div className="titlebar-left">
-          <span className="app-name">Myst Review</span>
+          <span className="app-name">Open Myst</span>
           {project && <span className="project-name">· {project.name}</span>}
         </div>
         <div className="titlebar-right">

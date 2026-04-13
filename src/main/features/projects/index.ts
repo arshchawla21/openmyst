@@ -100,7 +100,7 @@ async function readProject(root: string): Promise<ProjectMeta> {
 
 export async function createNewProject(): Promise<Result<ProjectMeta>> {
   const result = await dialog.showOpenDialog({
-    title: 'Choose a folder for your new Myst Review project',
+    title: 'Choose a folder for your new Open Myst project',
     properties: ['openDirectory', 'createDirectory'],
     buttonLabel: 'Create project here',
   });
@@ -117,7 +117,7 @@ export async function createNewProject(): Promise<Result<ProjectMeta>> {
 
 export async function openProject(): Promise<Result<ProjectMeta>> {
   const result = await dialog.showOpenDialog({
-    title: 'Open a Myst Review project',
+    title: 'Open an Open Myst project',
     properties: ['openDirectory'],
     buttonLabel: 'Open project',
   });
@@ -128,7 +128,7 @@ export async function openProject(): Promise<Result<ProjectMeta>> {
   if (!(await pathExists(projectJsonPath(root)))) {
     return {
       ok: false,
-      error: 'Not a Myst Review project (no project.json found). Create a new project instead.',
+      error: 'Not an Open Myst project (no project.json found). Create a new project instead.',
     };
   }
   const meta = await readProject(root);

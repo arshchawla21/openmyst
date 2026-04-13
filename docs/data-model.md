@@ -1,6 +1,6 @@
 # Data model
 
-A Myst Review project is a plain folder. There is no database, no proprietary container, no hidden service. Everything the app knows about your project lives in files you can `ls` and `cat` from any other tool.
+An Open Myst project is a plain folder. There is no database, no proprietary container, no hidden service. Everything the app knows about your project lives in files you can `ls` and `cat` from any other tool.
 
 ## Project folder layout
 
@@ -133,7 +133,7 @@ Append-only activity log. One line per ingest/delete operation, prefixed with th
 
 ## What is NOT in the project folder
 
-- **The OpenRouter API key.** Stored at the user level via Electron's `safeStorage` in `~/Library/Application Support/myst-review/settings.json` (macOS) — encrypted, never written in plaintext.
+- **The OpenRouter API key.** Stored at the user level via Electron's `safeStorage` in `~/Library/Application Support/openmyst/settings.json` (macOS) — encrypted, never written in plaintext.
 - **Recent projects list.** Same place. Per-user, not per-project.
 - **The agent template.** Lives in the source code at `src/main/features/projects/agent-template.md` and is copied into each new project as `agent.md`.
 

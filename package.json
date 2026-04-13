@@ -1,9 +1,10 @@
 {
-  "name": "myst-review",
+  "name": "openmyst",
+  "productName": "Open Myst",
   "version": "0.0.1",
   "private": true,
-  "description": "Desktop writing and research companion with inline AI commenting.",
-  "author": "Myst Review",
+  "description": "An open-source desktop research companion. Write, comment, and let an LLM propose inline edits against your own knowledge wiki.",
+  "author": "Open Myst",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -14,7 +15,12 @@
     "test:watch": "vitest",
     "lint": "eslint . --ext .ts,.tsx --cache",
     "format": "prettier --write \"src/**/*.{ts,tsx,css,html}\" \"*.{md,json}\"",
-    "format:check": "prettier --check \"src/**/*.{ts,tsx,css,html}\" \"*.{md,json}\""
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css,html}\" \"*.{md,json}\"",
+    "postinstall": "electron-builder install-app-deps",
+    "dist": "npm run build && electron-builder --publish never",
+    "dist:mac": "npm run build && electron-builder --mac --publish never",
+    "dist:win": "npm run build && electron-builder --win --publish never",
+    "dist:linux": "npm run build && electron-builder --linux --publish never"
   },
   "dependencies": {
     "@tiptap/core": "^3.22.3",
@@ -49,6 +55,7 @@
     "@typescript-eslint/parser": "^7.16.0",
     "@vitejs/plugin-react": "^4.3.1",
     "electron": "^31.2.0",
+    "electron-builder": "^24.13.3",
     "electron-vite": "^2.3.0",
     "eslint": "^8.57.0",
     "eslint-config-prettier": "^9.1.0",

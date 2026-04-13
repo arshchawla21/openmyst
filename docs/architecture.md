@@ -1,6 +1,6 @@
 # Architecture
 
-Myst Review is an Electron app. That gives us three processes (main, preload, renderer) and a hard rule that they can only talk to each other through IPC. Inside that, the main process is organised as a feature-folder layout with a thin platform layer underneath.
+Open Myst is an Electron app. That gives us three processes (main, preload, renderer) and a hard rule that they can only talk to each other through IPC. Inside that, the main process is organised as a feature-folder layout with a thin platform layer underneath.
 
 ## Process model
 

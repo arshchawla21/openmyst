@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for taking a look. Myst Review is small enough that a single coherent voice in the codebase matters more than process — so this doc is mostly *here is how to navigate it* with a few hard rules at the bottom.
+Thanks for taking a look. Open Myst is small enough that a single coherent voice in the codebase matters more than process — so this doc is mostly *here is how to navigate it* with a few hard rules at the bottom.
 
 ## Before you start
 

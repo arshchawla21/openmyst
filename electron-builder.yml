@@ -1,0 +1,58 @@
+appId: org.openmyst.app
+productName: Open Myst
+copyright: Copyright © 2026 Open Myst
+
+directories:
+  output: release/${version}
+  buildResources: build
+
+# electron-vite emits main/preload/renderer into out/ — ship that plus
+# package.json. node_modules is pulled in automatically by electron-builder.
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+  - '!**/*.md'
+
+# Explicitly unpacked binaries from native deps (pdf-parse has none, but
+# this keeps room for future additions).
+asarUnpack: []
+
+mac:
+  category: public.app-category.productivity
+  target:
+    - target: dmg
+      arch:
+        - arm64
+        - x64
+  # Unsigned build — users will see a Gatekeeper warning on first open.
+  # Set identity: null so builder doesn't try to find a cert.
+  identity: null
+  hardenedRuntime: false
+  gatekeeperAssess: false
+
+dmg:
+  artifactName: ${productName}-${version}-${arch}.dmg
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  artifactName: ${productName}-${version}-setup.${ext}
+
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+  perMachine: false
+
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  category: Office
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+# Disable auto-publishing — we only want local artifacts.
+publish: null

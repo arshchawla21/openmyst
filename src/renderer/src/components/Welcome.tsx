@@ -6,7 +6,7 @@ export function Welcome(): JSX.Element {
   return (
     <div className="welcome">
       <div className="welcome-card">
-        <h1>Myst Review</h1>
+        <h1>Open Myst</h1>
         <p className="welcome-tagline">A writing and research companion.</p>
 
         <div className="welcome-actions">
