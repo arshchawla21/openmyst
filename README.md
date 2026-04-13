@@ -12,7 +12,14 @@ A desktop writing and research companion. You write in a markdown editor, an LLM
 - **Inline edit proposals.** The agent emits `myst_edit` blocks; the editor renders them as red strike-throughs + green replacements you accept or reject without leaving the page.
 - **Per-document pending queue.** Edits are staged on disk (`.myst/pending/<doc>.json`) so a crash never loses an in-flight proposal, and you can iterate (*"make it shorter"*) against an unaccepted edit.
 - **Research wiki on disk.** Drop in a PDF or paste text → it gets summarised, cross-linked to existing sources, and added to `.myst/wiki/index.md`, which is loaded into every chat turn as the agent's default memory.
+
+  ![Dropping a source into the sources panel](res/source.png)
+
+  ![LLM-generated summary of a homeostasis paper](res/summary.png)
+
 - **Wiki graph.** Source-to-source links inferred from the summary text (no embeddings) render as a force-directed popup so you can see what your project knows.
+
+  ![Wiki graph showing linked sources](res/graph.png)
 - **Bring-your-own LLM.** All LLM calls go through OpenRouter, so you pick the model in Settings. Your API key is encrypted at rest via the OS keychain.
 
 ## Quick start
