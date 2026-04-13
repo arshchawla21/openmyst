@@ -69,4 +69,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). The short version: open an issue first i
 
 ## License
 
-See [LICENSE](LICENSE.md)
+See [LICENSE](LICENSE)
