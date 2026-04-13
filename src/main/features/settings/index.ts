@@ -4,6 +4,16 @@ import { join } from 'node:path';
 import type { AppSettings } from '@shared/types';
 import { DEFAULT_MODEL } from '@shared/types';
 
+/**
+ * User-wide settings, stored outside any project. Lives at
+ * `<userData>/settings.json` — on macOS that's
+ * `~/Library/Application Support/myst-review/settings.json`.
+ *
+ * The OpenRouter API key is encrypted at rest via Electron's `safeStorage`
+ * (keychain on macOS, DPAPI on Windows, libsecret on Linux). We store the
+ * cipher as base64 inside the same JSON; the plaintext never touches disk.
+ */
+
 interface StoredSettings {
   defaultModel: string;
   openRouterKeyCipher: string | null;

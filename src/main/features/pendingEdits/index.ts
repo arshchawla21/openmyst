@@ -1,32 +1,39 @@
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { BrowserWindow } from 'electron';
 import { IpcChannels } from '@shared/ipc-channels';
 import type { PendingEdit } from '@shared/types';
-import { getCurrentProject } from './projects';
-import { readDocument, writeDocument } from './document';
-import { applyEditOccurrence, applyEditOccurrenceFuzzy, mergePendingEdits } from './editLogic';
-import { log, logError } from './log';
+import { projectPath, ensureDir, broadcast, log, logError } from '../../platform';
+import { readDocument, writeDocument } from '../documents';
+import { applyEditOccurrence, applyEditOccurrenceFuzzy, mergePendingEdits } from '../chat/editLogic';
 
-function projectRoot(): string {
-  const project = getCurrentProject();
-  if (!project) throw new Error('No project is open.');
-  return project.path;
-}
+/**
+ * Pending edits: the staging area between "LLM proposed an edit" and "the
+ * edit is applied to the document on disk".
+ *
+ * Lifecycle of a pending edit:
+ *   1. Chat turn parses `myst_edit` blocks from the LLM response.
+ *   2. `addPendingEdits` persists them to `.myst/pending/<doc>.json` and
+ *      broadcasts PendingEdits.Changed so the renderer re-fetches.
+ *   3. The renderer shows a red strike-through + green widget in the editor
+ *      (see src/renderer/src/tiptap/pendingEditPlugin.ts).
+ *   4. User clicks Accept → `acceptPendingEdit` runs applyEditOccurrence,
+ *      writes the new document, removes the entry, broadcasts changes.
+ *      Clicks Reject → `rejectPendingEdit` just removes the entry.
+ *      Clicks into the widget and types → `patchPendingEditNewString` updates
+ *      the stored `new_string` without touching the document.
+ *
+ * Pending edits are deliberately append-only to disk per doc — we never
+ * mutate an entry in place. On revision we rewrite the whole file. At
+ * typical sizes (a few edits per doc) that's cheaper than thinking about it.
+ */
 
 function pendingPath(docFilename: string): string {
-  return join(projectRoot(), '.myst', 'pending', `${docFilename}.json`);
-}
-
-async function ensureDir(path: string): Promise<void> {
-  await fs.mkdir(path, { recursive: true });
+  return projectPath('.myst', 'pending', `${docFilename}.json`);
 }
 
 async function readPending(docFilename: string): Promise<PendingEdit[]> {
-  const path = pendingPath(docFilename);
   try {
-    const raw = await fs.readFile(path, 'utf-8');
+    const raw = await fs.readFile(pendingPath(docFilename), 'utf-8');
     return JSON.parse(raw) as PendingEdit[];
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
@@ -35,21 +42,16 @@ async function readPending(docFilename: string): Promise<PendingEdit[]> {
 }
 
 async function writePending(docFilename: string, edits: PendingEdit[]): Promise<void> {
-  const path = pendingPath(docFilename);
-  await ensureDir(join(projectRoot(), '.myst', 'pending'));
-  await fs.writeFile(path, JSON.stringify(edits, null, 2), 'utf-8');
+  await ensureDir(projectPath('.myst', 'pending'));
+  await fs.writeFile(pendingPath(docFilename), JSON.stringify(edits, null, 2), 'utf-8');
 }
 
 function notifyChanged(): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(IpcChannels.PendingEdits.Changed);
-  }
+  broadcast(IpcChannels.PendingEdits.Changed);
 }
 
 function notifyDocumentChanged(): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(IpcChannels.Document.Changed);
-  }
+  broadcast(IpcChannels.Document.Changed);
 }
 
 export async function listPendingEdits(docFilename: string): Promise<PendingEdit[]> {
@@ -104,8 +106,14 @@ export async function addPendingEdits(
   notifyChanged();
 }
 
-async function findPendingById(id: string): Promise<{ edit: PendingEdit; docFilename: string } | null> {
-  const pendingDir = join(projectRoot(), '.myst', 'pending');
+/**
+ * Find a pending edit by id across all docs in the project. Used by accept/
+ * reject — the renderer only sends us the edit id, so we scan.
+ */
+async function findPendingById(
+  id: string,
+): Promise<{ edit: PendingEdit; docFilename: string } | null> {
+  const pendingDir = projectPath('.myst', 'pending');
   let entries: string[];
   try {
     entries = await fs.readdir(pendingDir);
@@ -161,23 +169,20 @@ export async function acceptPendingEdit(id: string, overrideNewString?: string):
     const oldStr = edit.oldString;
     const firstLine = oldStr.split('\n')[0] ?? '';
     const firstWordHit = firstLine.length > 0 ? doc.indexOf(firstLine.slice(0, 20)) : -1;
-    logError(
-      'pending',
-      'accept.notLocated',
-      new Error('applyEditOccurrence returned null'),
-      {
-        id,
-        doc: docFilename,
-        docLen: doc.length,
-        oldStringLen: oldStr.length,
-        oldStringFull: oldStr,
-        occurrence: edit.occurrence,
-        firstLineFuzzyHitAt: firstWordHit,
-        docHead: doc.slice(0, 200),
-        docTail: doc.slice(-200),
-      },
+    logError('pending', 'accept.notLocated', new Error('applyEditOccurrence returned null'), {
+      id,
+      doc: docFilename,
+      docLen: doc.length,
+      oldStringLen: oldStr.length,
+      oldStringFull: oldStr,
+      occurrence: edit.occurrence,
+      firstLineFuzzyHitAt: firstWordHit,
+      docHead: doc.slice(0, 200),
+      docTail: doc.slice(-200),
+    });
+    throw new Error(
+      'Could not locate the original text to apply this edit. Reject it and ask the LLM to retry.',
     );
-    throw new Error('Could not locate the original text to apply this edit. Reject it and ask the LLM to retry.');
   }
   await writeDocument(docFilename, newDoc);
   log('pending', 'accept.written', { id, doc: docFilename, newDocChars: newDoc.length });

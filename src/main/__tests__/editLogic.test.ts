@@ -9,7 +9,7 @@ import {
   parseEditBlocks,
   tryResolvePendingPatch,
   validateEdits,
-} from '../editLogic';
+} from '../features/chat/editLogic';
 
 describe('parseEditBlocks', () => {
   it('parses a single myst_edit block', () => {

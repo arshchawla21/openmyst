@@ -1,29 +1,27 @@
 import { promises as fs } from 'node:fs';
-import { join } from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { BrowserWindow } from 'electron';
 import { IpcChannels } from '@shared/ipc-channels';
 import type { Comment } from '@shared/types';
-import { getCurrentProject } from './projects';
+import { projectPath, ensureDir, broadcast } from '../../platform';
 
-function projectRoot(): string {
-  const project = getCurrentProject();
-  if (!project) throw new Error('No project is open.');
-  return project.path;
-}
+/**
+ * Inline comments that anchor to a span of document text. Stored per-document
+ * at `.myst/comments/<doc>.json`. Not to be confused with pending edits, which
+ * are a separate machine-managed artefact.
+ *
+ * Anchoring is intentionally dumb: we store the selected text + a short
+ * context window (contextBefore / contextAfter). On render, the UI locates
+ * the span by string match. If the text has been rewritten, the comment is
+ * marked orphaned client-side — this module doesn't know or care.
+ */
 
 function commentsPath(docFilename: string): string {
-  return join(projectRoot(), '.myst', 'comments', `${docFilename}.json`);
-}
-
-async function ensureDir(path: string): Promise<void> {
-  await fs.mkdir(path, { recursive: true });
+  return projectPath('.myst', 'comments', `${docFilename}.json`);
 }
 
 async function readComments(docFilename: string): Promise<Comment[]> {
-  const path = commentsPath(docFilename);
   try {
-    const raw = await fs.readFile(path, 'utf-8');
+    const raw = await fs.readFile(commentsPath(docFilename), 'utf-8');
     return JSON.parse(raw) as Comment[];
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
@@ -32,15 +30,12 @@ async function readComments(docFilename: string): Promise<Comment[]> {
 }
 
 async function writeComments(docFilename: string, comments: Comment[]): Promise<void> {
-  const path = commentsPath(docFilename);
-  await ensureDir(join(projectRoot(), '.myst', 'comments'));
-  await fs.writeFile(path, JSON.stringify(comments, null, 2), 'utf-8');
+  await ensureDir(projectPath('.myst', 'comments'));
+  await fs.writeFile(commentsPath(docFilename), JSON.stringify(comments, null, 2), 'utf-8');
 }
 
 function notifyChanged(): void {
-  for (const win of BrowserWindow.getAllWindows()) {
-    win.webContents.send(IpcChannels.Comments.Changed);
-  }
+  broadcast(IpcChannels.Comments.Changed);
 }
 
 export async function listComments(docFilename: string): Promise<Comment[]> {
@@ -68,7 +63,7 @@ export async function createComment(
 }
 
 async function findCommentDocFile(id: string): Promise<string | null> {
-  const commentsDir = join(projectRoot(), '.myst', 'comments');
+  const commentsDir = projectPath('.myst', 'comments');
   let entries: string[];
   try {
     entries = await fs.readdir(commentsDir);

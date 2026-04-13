@@ -1,10 +1,13 @@
 /**
  * Tiny namespaced logger for the main process. Shows up in the terminal
- * where `npm run dev` is running. Set MYST_LOG=off to silence.
+ * where `npm run dev` is running. Set `MYST_LOG=off` to silence.
  *
  * Usage:
  *   log('chat', 'received', { doc: 'notes.md', userText: '...' });
- *   log('pending', 'accept', { id: 'abc-123' });
+ *   logError('pending', 'accept.failed', err, { id });
+ *
+ * Scopes are free-form — pick one per feature folder. The current conventions:
+ *   chat · pending · sources · wiki · projects · comments · llm
  */
 
 const enabled = process.env['MYST_LOG'] !== 'off';
@@ -44,7 +47,12 @@ export function log(scope: string, event: string, data?: Record<string, unknown>
   console.log(head + ' ' + pairs.join(' '));
 }
 
-export function logError(scope: string, event: string, err: unknown, data?: Record<string, unknown>): void {
+export function logError(
+  scope: string,
+  event: string,
+  err: unknown,
+  data?: Record<string, unknown>,
+): void {
   if (!enabled) return;
   const head = `[${ts()}] [myst:${scope}] ✗ ${event}`;
   const message = err instanceof Error ? err.message : String(err);

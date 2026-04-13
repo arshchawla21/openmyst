@@ -1,3 +1,27 @@
+/**
+ * Pure edit-format logic. No IO, no electron, no LLM calls — just string
+ * manipulation. That means this file is the easiest one in the codebase to
+ * test, and tests for every function here live in
+ * `src/main/__tests__/editLogic.test.ts`.
+ *
+ * Responsibilities, in rough order of a chat turn:
+ *   1. `parseEditBlocks`  — pull ```myst_edit ...``` blocks out of LLM output
+ *   2. `validateEdits`    — check each edit locates exactly one span (unless
+ *                           disambiguated by an explicit `occurrence`)
+ *   3. `tryResolvePendingPatch` — if an edit doesn't hit the doc, maybe it
+ *                                 targets text inside a PENDING edit (user is
+ *                                 refining an un-accepted proposal)
+ *   4. `mergePendingEdits` — dedupe "revise this pending edit" into the same
+ *                            slot instead of piling up parallels
+ *   5. `applyEditOccurrence(+Fuzzy)` — actually splice the new_string into the
+ *                                      document; used by pendingEdits on accept
+ *   6. `cleanChatContent` — strip internal jargon from chat before showing it
+ *
+ * If you're adding support for a new LLM edit format, this is the file to
+ * look at first. Keep it pure — anything that touches disk belongs in
+ * `features/pendingEdits/`.
+ */
+
 export interface EditOp {
   old_string: string;
   new_string: string;

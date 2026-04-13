@@ -1,0 +1,294 @@
+import { randomUUID } from 'node:crypto';
+import { IpcChannels } from '@shared/ipc-channels';
+import type { ChatMessage, PendingEdit } from '@shared/types';
+import { broadcast, log } from '../../platform';
+import { streamChat, type LlmMessage } from '../../llm';
+import {
+  addPendingEdits,
+  listPendingEdits,
+  patchPendingEditNewString,
+} from '../pendingEdits';
+import { readDocument } from '../documents';
+import {
+  cleanChatContent,
+  looksLikeDocumentRequest,
+  parseEditBlocks,
+  tryResolvePendingPatch,
+  validateEdits,
+  type EditOp,
+} from './editLogic';
+import { buildSystemPrompt } from './systemPrompt';
+import { appendMessage, loadHistory } from './persistence';
+
+/**
+ * A single chat turn, end-to-end. This is the orchestration loop — it calls
+ * the LLM, parses the response, triages edits against the pending-edits
+ * staging area, runs retries when validation fails, and finally stages the
+ * surviving edits and persists the assistant reply.
+ *
+ * If you want to change *what* the LLM sees on a turn, edit systemPrompt.ts.
+ * If you want to change *how* we react to its response (parse/triage/retry),
+ * edit this file. The two concerns split cleanly in practice.
+ */
+
+export interface TurnContext {
+  apiKey: string;
+  model: string;
+  agentPrompt: string;
+  document: string;
+  wikiIndex: string;
+  docLabel: string;
+  activeDocument: string;
+  userText: string;
+  displayText: string | undefined;
+}
+
+async function listPendingEditsSafe(docFilename: string): Promise<PendingEdit[]> {
+  try {
+    return await listPendingEdits(docFilename);
+  } catch {
+    return [];
+  }
+}
+
+async function stageEdits(docFilename: string, edits: EditOp[]): Promise<number> {
+  if (edits.length === 0) return 0;
+  await addPendingEdits(
+    docFilename,
+    edits.map((e) => {
+      const entry: { oldString: string; newString: string; occurrence?: number } = {
+        oldString: e.old_string,
+        newString: e.new_string,
+      };
+      if (e.occurrence !== undefined) entry.occurrence = e.occurrence;
+      return entry;
+    }),
+  );
+  return edits.length;
+}
+
+interface TriageResult {
+  remainingEdits: EditOp[];
+  pendingPatched: number;
+}
+
+/**
+ * An edit whose old_string references content from a pending edit (not yet
+ * in the doc on disk) should patch that pending in place, not fail doc
+ * validation. Critical for "write me X → make it shorter" where the story
+ * only lives inside the pending newString so far.
+ */
+async function triageEditsAgainstPending(
+  edits: EditOp[],
+  existingPending: PendingEdit[],
+  document: string,
+  activeDocument: string,
+): Promise<TriageResult> {
+  if (edits.length === 0 || existingPending.length === 0) {
+    return { remainingEdits: edits, pendingPatched: 0 };
+  }
+  const workingPending: PendingEdit[] = existingPending.map((e) => ({ ...e }));
+  const remaining: EditOp[] = [];
+  let pendingPatched = 0;
+  for (const edit of edits) {
+    if (edit.old_string === '' || document.indexOf(edit.old_string) !== -1) {
+      log('chat', 'triage.doc', {
+        reason: edit.old_string === '' ? 'append' : 'matched-doc',
+        oldPreview: edit.old_string.slice(0, 60),
+      });
+      remaining.push(edit);
+      continue;
+    }
+    const match = tryResolvePendingPatch(
+      edit.old_string,
+      edit.new_string,
+      edit.occurrence ?? 1,
+      workingPending,
+    );
+    if (match) {
+      const target = workingPending[match.index]!;
+      log('chat', 'triage.pendingPatch', {
+        pendingId: target.id,
+        index: match.index,
+        oldPreview: edit.old_string.slice(0, 60),
+        newPreview: edit.new_string.slice(0, 60),
+        patchedLen: match.updatedNewString.length,
+      });
+      await patchPendingEditNewString(activeDocument, target.id, match.updatedNewString);
+      workingPending[match.index] = { ...target, newString: match.updatedNewString };
+      pendingPatched++;
+    } else {
+      log('chat', 'triage.unmatched', { oldPreview: edit.old_string.slice(0, 80) });
+      remaining.push(edit);
+    }
+  }
+  return { remainingEdits: remaining, pendingPatched };
+}
+
+export async function runTurn(ctx: TurnContext): Promise<ChatMessage> {
+  const {
+    apiKey,
+    model,
+    agentPrompt,
+    document,
+    wikiIndex,
+    docLabel,
+    activeDocument,
+    userText,
+    displayText,
+  } = ctx;
+
+  const history = await loadHistory();
+  log('chat', 'turn.start', {
+    doc: activeDocument,
+    model,
+    docChars: document.length,
+    historyLen: history.length,
+    hasDisplayText: displayText !== undefined,
+    isComment: userText.startsWith('COMMENT CONTEXT'),
+  });
+
+  const existingPending = await listPendingEditsSafe(activeDocument);
+  log('chat', 'turn.pending.snapshot', {
+    count: existingPending.length,
+    ids: existingPending.map((e) => e.id).join(','),
+  });
+
+  const systemContent = buildSystemPrompt({
+    agentPrompt,
+    activeDocument,
+    docLabel,
+    document,
+    pending: existingPending,
+    wikiIndex,
+  });
+
+  const llmHistory: LlmMessage[] = history.map((m) => ({ role: m.role, content: m.content }));
+  // Replace the just-appended user turn with the full prompt for the LLM.
+  if (displayText !== undefined && llmHistory.length > 0) {
+    llmHistory[llmHistory.length - 1] = { role: 'user', content: userText };
+  }
+
+  const messages: LlmMessage[] = [
+    { role: 'system', content: systemContent },
+    ...llmHistory,
+  ];
+
+  log('chat', 'turn.systemPrompt', { chars: systemContent.length });
+
+  const fullContent = await streamChat({
+    apiKey,
+    model,
+    messages,
+    logScope: 'chat',
+    onChunk: (chunk) => broadcast(IpcChannels.Chat.Chunk, chunk),
+  });
+
+  let { edits, chatContent } = parseEditBlocks(fullContent);
+  log('chat', 'turn.parsed', {
+    edits: edits.length,
+    editPreviews: edits.map((e) => ({
+      oldLen: e.old_string.length,
+      newLen: e.new_string.length,
+      occ: e.occurrence ?? 1,
+      oldPreview: e.old_string.slice(0, 80),
+      newPreview: e.new_string.slice(0, 80),
+    })),
+    chatPreview: chatContent.slice(0, 200),
+  });
+
+  const triaged = await triageEditsAgainstPending(
+    edits,
+    existingPending,
+    document,
+    activeDocument,
+  );
+  edits = triaged.remainingEdits;
+  const pendingPatched = triaged.pendingPatched;
+
+  // Comment-context turns default to chat answers; don't nag the LLM to emit
+  // an edit just because the scaffolded prompt has example change-verbs in it.
+  const isCommentTurn = userText.startsWith('COMMENT CONTEXT');
+  if (
+    !isCommentTurn &&
+    edits.length === 0 &&
+    pendingPatched === 0 &&
+    looksLikeDocumentRequest(userText, fullContent)
+  ) {
+    log('chat', 'retry.missingBlock', { userText: userText.slice(0, 120) });
+    const doc = await readDocument(activeDocument);
+    const retryMessages: LlmMessage[] = [
+      ...messages,
+      { role: 'assistant', content: fullContent },
+      {
+        role: 'user',
+        content: `You forgot to include the myst_edit block. Here is the current document:\n\n${doc}\n\nPlease output the myst_edit block(s) now to make the change.`,
+      },
+    ];
+    const retryContent = await streamChat({
+      apiKey,
+      model,
+      messages: retryMessages,
+      logScope: 'chat',
+    });
+    const retryResult = parseEditBlocks(retryContent);
+    if (retryResult.edits.length > 0) {
+      edits = retryResult.edits;
+      if (!chatContent) chatContent = retryResult.chatContent;
+    }
+  }
+
+  if (edits.length > 0) {
+    const validation = validateEdits(document, edits);
+    if (!validation.ok) {
+      log('chat', 'retry.validation', { failures: validation.failures });
+      const retryMessages: LlmMessage[] = [
+        ...messages,
+        { role: 'assistant', content: fullContent },
+        {
+          role: 'user',
+          content: `Some edits could not be located unambiguously:\n${validation.failures.join('\n\n')}\n\nRe-emit the failed myst_edit blocks with a more specific old_string, or add an "occurrence" field to pick which match you meant.`,
+        },
+      ];
+      const retryContent = await streamChat({
+        apiKey,
+        model,
+        messages: retryMessages,
+        logScope: 'chat',
+      });
+      const retryResult = parseEditBlocks(retryContent);
+      if (retryResult.edits.length > 0) {
+        const retryValidation = validateEdits(document, retryResult.edits);
+        if (retryValidation.ok) {
+          edits = retryResult.edits;
+        }
+      }
+    }
+  }
+
+  const staged = await stageEdits(activeDocument, edits);
+  const totalApplied = staged + pendingPatched;
+  log('chat', 'turn.done', {
+    staged,
+    pendingPatched,
+    totalApplied,
+    finalChatPreview: chatContent.slice(0, 200),
+  });
+
+  let finalChat =
+    totalApplied > 0 ? chatContent || 'Ready to review — check the pending edits.' : fullContent;
+  finalChat = cleanChatContent(finalChat);
+
+  const assistantMsg: ChatMessage = {
+    id: randomUUID(),
+    role: 'assistant',
+    content:
+      finalChat ||
+      (totalApplied > 0
+        ? `Staged ${totalApplied} edit${totalApplied === 1 ? '' : 's'} for review.`
+        : ''),
+    timestamp: new Date().toISOString(),
+  };
+  await appendMessage(assistantMsg);
+  return assistantMsg;
+}
