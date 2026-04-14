@@ -133,11 +133,11 @@ describe('formatLookupReply', () => {
     expect(formatLookupReply([])).toBe('');
   });
 
-  it('formats a hit with the verbatim text quoted', () => {
+  it('formats an anchor hit with the verbatim text quoted', () => {
     const reply = formatLookupReply([
       {
         request: { slug: 'smith-2022', anchor: 'law-1-2' },
-        hit: {
+        anchorHit: {
           slug: 'smith-2022',
           anchor: {
             id: 'law-1-2',
@@ -149,6 +149,7 @@ describe('formatLookupReply', () => {
           },
           text: 'Law 1.2. Foo.',
         },
+        pageHit: null,
       },
     ]);
     expect(reply).toContain('smith-2022#law-1-2');
@@ -156,14 +157,63 @@ describe('formatLookupReply', () => {
     expect(reply).toContain('> Law 1.2. Foo.');
   });
 
-  it('reports misses clearly', () => {
+  it('reports anchor misses clearly', () => {
     const reply = formatLookupReply([
       {
         request: { slug: 'ghost', anchor: 'none' },
-        hit: null,
+        anchorHit: null,
+        pageHit: null,
       },
     ]);
     expect(reply).toContain('Lookup failed');
     expect(reply).toContain('ghost#none');
+  });
+
+  it('formats a slug-only page hit with summary and anchor menu', () => {
+    const reply = formatLookupReply([
+      {
+        request: { slug: 'smith-2022' },
+        anchorHit: null,
+        pageHit: {
+          slug: 'smith-2022',
+          meta: {
+            name: 'Smith 2022',
+            indexSummary: 'Action principle paper.',
+            sourcePath: 'https://example.com/smith',
+          },
+          summary: 'Detailed summary body.',
+          anchors: [
+            { id: 'law-1-2', type: 'rule', label: 'Law 1.2' },
+            { id: 'intro', type: 'section', label: 'Introduction' },
+          ],
+        },
+      },
+    ]);
+    expect(reply).toContain('Smith 2022');
+    expect(reply).toContain('`smith-2022`');
+    expect(reply).toContain('Action principle paper.');
+    expect(reply).toContain('Detailed summary body.');
+    expect(reply).toContain('`law-1-2`');
+    expect(reply).toContain('Introduction');
+    expect(reply).toContain('https://example.com/smith');
+  });
+
+  it('reports slug-only misses clearly', () => {
+    const reply = formatLookupReply([
+      {
+        request: { slug: 'ghost' },
+        anchorHit: null,
+        pageHit: null,
+      },
+    ]);
+    expect(reply).toContain('Lookup failed');
+    expect(reply).toContain('`ghost`');
+  });
+
+  it('parses slug-only lookup blocks', () => {
+    const { requests } = parseSourceLookups(
+      'look here ```source_lookup\n{"slug":"smith-2022"}\n``` ok',
+    );
+    expect(requests).toEqual([{ slug: 'smith-2022' }]);
   });
 });

@@ -60,12 +60,11 @@ export async function updateWikiIndex(sources: SourceMeta[]): Promise<void> {
     lines.push('_No sources yet._');
   } else {
     for (const s of sources) {
-      lines.push(`- [${s.name}](../../sources/${s.slug}.md) — ${s.indexSummary}`);
-      if (s.anchors && s.anchors.length > 0) {
-        for (const a of s.anchors) {
-          lines.push(`  - \`${s.slug}#${a.id}\` [${a.type}] ${a.label}`);
-        }
-      }
+      const anchorHint =
+        s.anchors && s.anchors.length > 0 ? ` _(${s.anchors.length} anchors)_` : '';
+      lines.push(
+        `- [${s.name}](../../sources/${s.slug}.md) (\`${s.slug}\`) — ${s.indexSummary}${anchorHint}`,
+      );
     }
   }
   lines.push('');

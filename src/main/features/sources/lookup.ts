@@ -1,5 +1,5 @@
 import { promises as fs } from 'node:fs';
-import type { SourceIndex, SourceAnchor } from '@shared/types';
+import type { SourceIndex, SourceAnchor, SourceMeta } from '@shared/types';
 import { projectPath, pathExists } from '../../platform';
 
 /**
@@ -53,4 +53,41 @@ export async function listAnchorSummaries(
   const index = await readIndex(slug);
   if (!index) return [];
   return index.anchors.map((a) => ({ id: a.id, type: a.type, label: a.label }));
+}
+
+export interface SourcePageHit {
+  slug: string;
+  meta: Pick<SourceMeta, 'name' | 'indexSummary' | 'sourcePath'>;
+  summary: string;
+  anchors: Pick<SourceAnchor, 'id' | 'type' | 'label'>[];
+}
+
+/**
+ * Slug-only source lookup — the "open the full source page" action. Returns
+ * the detailed summary (sources/<slug>.md) plus the anchor index so the LLM
+ * can decide which anchor to pull next. No raw text, no verbatim quotes — the
+ * agent has to `source_lookup` a specific anchor for that.
+ */
+export async function readSourcePage(slug: string): Promise<SourcePageHit | null> {
+  const metaPath = projectPath('sources', `${slug}.meta.json`);
+  const summaryPath = projectPath('sources', `${slug}.md`);
+  if (!(await pathExists(metaPath)) || !(await pathExists(summaryPath))) return null;
+  try {
+    const rawMeta = await fs.readFile(metaPath, 'utf-8');
+    const meta = JSON.parse(rawMeta) as SourceMeta;
+    const summary = await fs.readFile(summaryPath, 'utf-8');
+    const anchors = await listAnchorSummaries(slug);
+    return {
+      slug,
+      meta: {
+        name: meta.name,
+        indexSummary: meta.indexSummary,
+        sourcePath: meta.sourcePath,
+      },
+      summary,
+      anchors,
+    };
+  } catch {
+    return null;
+  }
 }
