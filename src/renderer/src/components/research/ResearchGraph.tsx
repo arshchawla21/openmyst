@@ -553,6 +553,7 @@ export function ResearchGraph({
 
   return (
     <div className="research-graph">
+      <div className="rg-canvas">
       {running && onStopResearch && (
         <button
           type="button"
@@ -712,6 +713,7 @@ export function ResearchGraph({
           </g>
         </svg>
       )}
+      </div>
 
       <div className="research-graph-tooltip">
         {hovered ? (

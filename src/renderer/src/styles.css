@@ -2881,6 +2881,17 @@ h3 {
   --rg-result: #9a7a95;
   --rg-skipped: #3e3842;
 }
+/* Wraps the SVG + its absolute overlays (stop btn, stats, zoom controls)
+ * so those overlays anchor to the SVG's box rather than the whole
+ * `.research-graph` column — otherwise bottom-anchored controls dangle
+ * below the canvas and float over the tooltip/status strip. */
+.rg-canvas {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
 .research-graph-status {
   display: flex;
   flex-direction: column;
