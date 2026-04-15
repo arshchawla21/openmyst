@@ -33,7 +33,7 @@ const CONTINUE_LABELS: Record<DeepPlanStage, string> = {
 };
 
 export function StageBar({ stage, tokensUsedK, onOpenSettings }: Props): JSX.Element {
-  const { status, busy, advance, oneShot, stopResearch } = useDeepPlan();
+  const { status, busy, advance, oneShot, stopResearch, runResearch } = useDeepPlan();
   const visible = DEEP_PLAN_STAGE_ORDER.filter((s) => s !== 'done');
   const currentIdx = DEEP_PLAN_STAGE_ORDER.indexOf(stage);
 
@@ -91,6 +91,16 @@ export function StageBar({ stage, tokensUsedK, onOpenSettings }: Props): JSX.Ele
         })}
       </div>
       <div className="dp-stagebar-right">
+        {isResearch && !researchRunning && (
+          <button
+            type="button"
+            className="dp-btn dp-btn-secondary dp-btn-small"
+            onClick={() => void runResearch()}
+            disabled={busy}
+          >
+            Continue researching
+          </button>
+        )}
         {action && (
           <button
             type="button"
