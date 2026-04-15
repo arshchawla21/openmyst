@@ -389,7 +389,7 @@ export function ResearchGraph({ events, rootLabel, running }: Props): JSX.Elemen
               if (n.kind === 'root') {
                 return (
                   <g key={n.id}>
-                    <circle cx={n.x} cy={n.y} r={18} className="rg-root" />
+                    <circle cx={n.x} cy={n.y} r={14} className="rg-root" />
                   </g>
                 );
               }
@@ -409,13 +409,13 @@ export function ResearchGraph({ events, rootLabel, running }: Props): JSX.Elemen
                     <circle
                       cx={n.x}
                       cy={n.y}
-                      r={active ? 14 : 11}
+                      r={active ? 11 : 8.5}
                       className="rg-query"
                     />
                     {active && (
                       <text
                         x={n.x}
-                        y={n.y + 28}
+                        y={n.y + 23}
                         textAnchor="middle"
                         className="rg-label rg-label-hover"
                       >
@@ -447,7 +447,7 @@ export function ResearchGraph({ events, rootLabel, running }: Props): JSX.Elemen
                   <circle
                     cx={n.x}
                     cy={n.y}
-                    r={active ? 10 : 7.5}
+                    r={active ? 8 : 6}
                     fill={resultColor(n.status)}
                     className={`rg-result rg-result-${n.status ?? 'pending'}${
                       clickable ? ' rg-result-clickable' : ''
@@ -456,7 +456,7 @@ export function ResearchGraph({ events, rootLabel, running }: Props): JSX.Elemen
                   {active && (
                     <text
                       x={n.x}
-                      y={n.y + 22}
+                      y={n.y + 18}
                       textAnchor="middle"
                       className="rg-label rg-label-hover"
                     >
