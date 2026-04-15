@@ -191,7 +191,17 @@ interface Props {
    * and persist across run resets; new run events layer on top.
    */
   seedGraph?: WikiGraph | null;
+  /**
+   * When provided and the graph is `running`, a Stop button mounts in the
+   * top-right of the canvas. Callers that own the run lifecycle (e.g. the
+   * Deep Search modal) pass this so the stop action lives on the graph.
+   */
+  onStopResearch?: () => void;
 }
+
+const ZOOM_MIN = 0.4;
+const ZOOM_MAX = 3;
+const ZOOM_STEP = 1.25;
 
 export function ResearchGraph({
   events,
@@ -199,6 +209,7 @@ export function ResearchGraph({
   running,
   onNodeOpen,
   seedGraph,
+  onStopResearch,
 }: Props): JSX.Element {
   const [, forceRender] = useState(0);
   const nodesRef = useRef<Node[]>([]);
@@ -212,6 +223,63 @@ export function ResearchGraph({
   const hoverRef = useRef<string | null>(null);
   const [hoverId, setHoverId] = useState<string | null>(null);
   const openPreview = useSourcePreview((s) => s.open);
+
+  // Zoom + pan state. viewBox is derived from these so the nodes' coordinate
+  // space never changes — the sim keeps running in unscaled space.
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [isDragging, setIsDragging] = useState(false);
+  // Set by the drag handler when movement exceeds the click threshold; the
+  // node onClick reads this to swallow the click that would otherwise fire
+  // at drag-end.
+  const suppressClickRef = useRef(false);
+
+  const handleZoom = (factor: number): void => {
+    setZoom((z) => Math.max(ZOOM_MIN, Math.min(ZOOM_MAX, z * factor)));
+  };
+  const handleResetView = (): void => {
+    setZoom(1);
+    setPan({ x: 0, y: 0 });
+  };
+
+  // Click-drag to pan. We attach window listeners imperatively on mousedown
+  // so dragging off the SVG keeps working, and detach them on mouseup.
+  const handleSvgMouseDown = (e: React.MouseEvent<SVGSVGElement>): void => {
+    if (e.button !== 0) return;
+    const svgEl = e.currentTarget;
+    const rect = svgEl.getBoundingClientRect();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startPan = { ...pan };
+    const currentZoom = zoom;
+    let dragged = false;
+    const onMove = (ev: MouseEvent): void => {
+      const dx = ev.clientX - startX;
+      const dy = ev.clientY - startY;
+      if (!dragged && Math.hypot(dx, dy) > 3) dragged = true;
+      if (!dragged) return;
+      const ratioX = WIDTH / currentZoom / rect.width;
+      const ratioY = HEIGHT / currentZoom / rect.height;
+      setPan({
+        x: startPan.x - dx * ratioX,
+        y: startPan.y - dy * ratioY,
+      });
+    };
+    const onUp = (): void => {
+      if (dragged) {
+        suppressClickRef.current = true;
+        window.setTimeout(() => {
+          suppressClickRef.current = false;
+        }, 0);
+      }
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      setIsDragging(false);
+    };
+    setIsDragging(true);
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  };
 
   // Click handler for ingested result nodes — fetches the full SourceMeta
   // (the graph only carries slug + name) and hands it to the preview popup,
@@ -481,8 +549,54 @@ export function ResearchGraph({
     else if (ev.kind === 'result-ingested') sourceCount++;
   }
 
+  const hasGraph = nodes.length > 1;
+
   return (
     <div className="research-graph">
+      {running && onStopResearch && (
+        <button
+          type="button"
+          className="rg-stop-btn"
+          onClick={onStopResearch}
+          title="Stop research"
+        >
+          Stop research
+        </button>
+      )}
+      {hasGraph && (
+        <div className="rg-zoom-controls" aria-hidden="true">
+          <button
+            type="button"
+            className="rg-zoom-btn"
+            onClick={() => handleZoom(ZOOM_STEP)}
+            disabled={zoom >= ZOOM_MAX - 0.001}
+            title="Zoom in"
+            aria-label="Zoom in"
+          >
+            +
+          </button>
+          <button
+            type="button"
+            className="rg-zoom-btn"
+            onClick={() => handleZoom(1 / ZOOM_STEP)}
+            disabled={zoom <= ZOOM_MIN + 0.001}
+            title="Zoom out"
+            aria-label="Zoom out"
+          >
+            −
+          </button>
+          <button
+            type="button"
+            className="rg-zoom-btn rg-zoom-reset"
+            onClick={handleResetView}
+            disabled={zoom === 1 && pan.x === 0 && pan.y === 0}
+            title="Reset view"
+            aria-label="Reset view"
+          >
+            ⌂
+          </button>
+        </div>
+      )}
       {(queryCount > 0 || sourceCount > 0) && (
         <div className="rg-stats" aria-hidden="true">
           <span className={`ds-dot${running ? ' ds-dot-running' : ''}`} />
@@ -506,9 +620,12 @@ export function ResearchGraph({
         </div>
       ) : (
         <svg
-          className="research-graph-svg"
-          viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+          className={`research-graph-svg${isDragging ? ' research-graph-svg-grabbing' : ''}`}
+          viewBox={`${CENTER_X - WIDTH / zoom / 2 + pan.x} ${
+            CENTER_Y - HEIGHT / zoom / 2 + pan.y
+          } ${WIDTH / zoom} ${HEIGHT / zoom}`}
           preserveAspectRatio="xMidYMid meet"
+          onMouseDown={handleSvgMouseDown}
         >
           <g>
             {edges.map((e, i) => {
@@ -574,6 +691,7 @@ export function ResearchGraph({
                   }}
                   onClick={(e) => {
                     if (!clickable) return;
+                    if (suppressClickRef.current) return;
                     e.stopPropagation();
                     openIngestedNode(n.slug!);
                   }}
